@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "echo \"(lint pendiente)\"",
     "test": "echo \"(tests pendientes)\"",
-    "create-admin": "tsx src/scripts/create-admin.ts"
+    "create-admin": "tsx src/scripts/create-admin.ts",
+    "reset-password": "tsx src/scripts/reset-password.ts"
   },
   "dependencies": {
     "@euromex/shared": "workspace:*",
