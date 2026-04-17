@@ -342,16 +342,204 @@ echo $! > /var/run/euromex-web.pid
 
 ---
 
-## Fase 7 (pendiente): Traefik + HTTPS con dominio
+## Fase 7 — Producción: HTTPS + systemd + backups
 
-Cuando tengas un (sub)dominio Euromex listo (ej. `chat.euromex.com.mx`):
+Cuando ya tengas validado el staging (login, chat, adjuntos funcionan
+por IP+puerto), este es el paso a producción.
 
-1. Apuntar DNS al VPS.
-2. Añadir nuestras apps a la red Docker de Traefik.
-3. Poner `labels` Traefik en `infra/docker-compose.yml` para que Traefik
-   las enrute con Let's Encrypt automático.
-4. Convertir `nohup` a `systemd` units.
-5. Backups cifrados a S3/B2 y monitoreo con uptime-kuma.
+### Pre-requisitos
 
-Como ya tienes Traefik + TLS funcionando con n8n, en Fase 7 lo
-enchufamos ahí en vez de instalar Nginx. Más simple, menos piezas.
+1. **Un (sub)dominio apuntando al VPS.** Sugerencia:
+   `chat.euromex.com.mx` (para la web) y `api.chat.euromex.com.mx`
+   (para la API). Cambios DNS:
+   ```
+   chat.euromex.com.mx      A   148.230.82.52
+   api.chat.euromex.com.mx  A   148.230.82.52
+   ```
+   Verifica propagación desde tu laptop:
+   ```bash
+   dig +short chat.euromex.com.mx
+   dig +short api.chat.euromex.com.mx
+   ```
+   Ambas deben devolver la IP del VPS.
+
+2. **Traefik existente con Let's Encrypt configurado.** Tu Traefik ya
+   corre y presume tener un certResolver. Para confirmar:
+   ```bash
+   docker exec root-traefik-1 cat /etc/traefik/traefik.yml 2>/dev/null | grep -A3 certResolver
+   # o
+   docker inspect root-traefik-1 --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
+   ```
+   Anota:
+   - El path del **directorio dinámico** de Traefik (suele ser
+     `/dynamic` montado desde `/root/traefik/dynamic/`).
+   - El nombre de tu **certResolver** (suele ser `letsencrypt`).
+
+### 1. Configurar Traefik para Euromex
+
+```bash
+cd /opt/euromex
+
+# Copia el template al directorio dinámico de Traefik.
+# AJUSTA LA RUTA según tu setup (ver pre-requisito 2).
+TRAEFIK_DYN=/root/traefik/dynamic   # ← cambia esto si es otro
+cp infra/traefik/euromex.yml "$TRAEFIK_DYN/euromex.yml"
+
+# Edita para poner tus dominios reales
+sed -i \
+  -e 's/chat\.example\.com/chat.euromex.com.mx/g' \
+  -e 's/api\.chat\.example\.com/api.chat.euromex.com.mx/g' \
+  "$TRAEFIK_DYN/euromex.yml"
+
+# Si tu certResolver tiene otro nombre, reemplaza:
+# sed -i 's/letsencrypt/miresolver/g' "$TRAEFIK_DYN/euromex.yml"
+
+# Traefik recarga solo. Verifica que no haya errores:
+docker logs root-traefik-1 --tail 30
+```
+
+Deberías ver líneas como `Configuration loaded from file: ...euromex.yml`.
+
+### 2. Actualizar los `.env` para apuntar a los dominios
+
+```bash
+# API: ajusta CORS para aceptar solo HTTPS del nuevo dominio
+sed -i \
+  -e 's|CORS_ORIGINS=.*|CORS_ORIGINS=https://chat.euromex.com.mx|' \
+  /opt/euromex/apps/api/.env
+
+# Web: apunta a la nueva URL del API
+sed -i \
+  -e 's|NEXT_PUBLIC_API_BASE=.*|NEXT_PUBLIC_API_BASE=https://api.chat.euromex.com.mx|' \
+  /opt/euromex/apps/web/.env.local
+
+# Re-build de la web porque NEXT_PUBLIC_* se injectan en build-time
+cd /opt/euromex/apps/web
+pnpm build
+```
+
+### 3. Cambiar de `nohup` a `systemd`
+
+```bash
+# Detén los procesos actuales lanzados con nohup
+kill $(cat /var/run/euromex-api.pid) 2>/dev/null || true
+kill $(cat /var/run/euromex-web.pid) 2>/dev/null || true
+
+# Instala los units de systemd (copia a /etc/systemd/system + enable + start)
+sudo bash /opt/euromex/infra/scripts/install-systemd.sh
+
+# Verifica
+systemctl status euromex-api euromex-web --no-pager
+journalctl -u euromex-api -n 20 --no-pager
+```
+
+Ventajas del cambio: auto-restart al reboot, restart automático si el
+proceso crashea, logs por `journalctl` (no más archivos /var/log/...).
+
+### 4. Cerrar los puertos 3100 y 4000 en Hostinger
+
+Ahora que todo pasa por Traefik (443), los puertos raw no deben estar
+expuestos a internet.
+
+**hPanel → VPS → Firewall:** elimina las reglas TCP entrantes 3100 y
+4000 que habías agregado antes. Los servicios seguirán respondiendo
+*desde localhost* (127.0.0.1:3100 y :4000), que es lo que Traefik
+necesita.
+
+### 5. Prueba el HTTPS
+
+Desde tu laptop:
+```bash
+curl -I https://chat.euromex.com.mx
+curl -s https://api.chat.euromex.com.mx/health
+```
+
+Debes ver cert válido (`HTTP/2 200`) y el JSON del health. Evalúa el
+grado del TLS en https://www.ssllabs.com/ssltest/ — apunta a A o A+.
+
+En el navegador: `https://chat.euromex.com.mx/login`. Login con el
+admin. Desde la pantalla principal ya puedes instalar la PWA con cert
+válido — el service worker se registrará esta vez.
+
+### 6. Configurar backups cifrados
+
+Genera una passphrase fuerte y guárdala en tu password manager (al
+nivel de MASTER_ENC_KEY):
+
+```bash
+# Passphrase — cópiala AHORA a tu password manager
+BACKUP_PASS=$(openssl rand -base64 48)
+echo "EUROMEX_BACKUP_PASSPHRASE=$BACKUP_PASS"
+
+# Crea el env file de systemd
+sudo mkdir -p /etc/euromex
+sudo tee /etc/euromex/backup.env <<EOF
+EUROMEX_BACKUP_PASSPHRASE=$BACKUP_PASS
+KEEP_DAYS=14
+# Opcional — sincroniza a un servidor remoto (rsync via SSH)
+# REMOTE_RSYNC=backup-user@otra-ip:/srv/backups/euromex
+EOF
+sudo chmod 600 /etc/euromex/backup.env
+
+# Habilita el timer diario
+sudo systemctl enable --now euromex-backup.timer
+
+# Verifica
+systemctl list-timers euromex-backup
+```
+
+**Prueba un backup manual** (no esperes a las 3 AM la primera vez):
+```bash
+sudo systemctl start euromex-backup.service
+sudo journalctl -u euromex-backup -n 30
+ls -lh /opt/euromex/backups/
+```
+
+Para restaurar en caso de desastre:
+```bash
+EUROMEX_BACKUP_PASSPHRASE='xxx' \
+  /opt/euromex/infra/scripts/restore.sh \
+  /opt/euromex/backups/pg-YYYY-MM-DDTHH-MM-SSZ.dump.gpg \
+  /opt/euromex/backups/storage-YYYY-MM-DDTHH-MM-SSZ.tar.gpg
+```
+
+### 7. Checklist de producción
+
+- [ ] DNS resuelve correctamente para ambos dominios
+- [ ] `curl https://.../health` devuelve ok con cert válido
+- [ ] SSL Labs reporta A o A+
+- [ ] `systemctl is-enabled euromex-api euromex-web` ambos `enabled`
+- [ ] Reboot del VPS → los servicios vuelven solos (`sudo reboot` y
+      luego `systemctl status`)
+- [ ] Puertos 3100 y 4000 cerrados en el firewall externo
+- [ ] Backup manual ejecutado y archivos `.gpg` en `/opt/euromex/backups/`
+- [ ] Passphrase de backup guardada en 2 password managers distintos
+- [ ] `MASTER_ENC_KEY` también en 2 password managers (crítico)
+- [ ] PWA instalada desde `https://chat.euromex.com.mx` en tu móvil
+      (verifica que aparezca el candado 🔒 de HTTPS)
+- [ ] Login con admin + TOTP, envío de mensaje, envío de adjunto
+      funcionan end-to-end
+
+### Operación diaria
+
+```bash
+# Estado
+systemctl status euromex-api euromex-web --no-pager
+
+# Logs en vivo
+journalctl -u euromex-api -f       # API
+journalctl -u euromex-web -f       # Web
+journalctl -u euromex-backup -n 50 # Últimos backups
+
+# Reiniciar tras un deploy
+git -C /opt/euromex pull
+cd /opt/euromex && pnpm install
+cd /opt/euromex/apps/web && pnpm build
+sudo systemctl restart euromex-api euromex-web
+
+# Emitir invitación para un usuario (recuerda la UI admin en /app)
+
+# Reset de password (si alguien lo pierde)
+RESET_USERNAME=juan RESET_PASSWORD='NuevaLarga!' \
+  pnpm --filter @euromex/api run reset-password
+```

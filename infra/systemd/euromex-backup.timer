@@ -1,0 +1,13 @@
+[Unit]
+Description=Dispara backup diario de Euromex Chat
+
+[Timer]
+# 03:00 UTC todos los días. Ajusta con `systemctl edit euromex-backup.timer`.
+OnCalendar=*-*-* 03:00:00
+# Si el VPS estuvo apagado a la hora programada, corre al encender.
+Persistent=true
+# Jitter para evitar que todos los VPSs disparen exactamente al mismo segundo.
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

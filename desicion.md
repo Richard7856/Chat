@@ -6,39 +6,126 @@
 
 ## Estado actual
 
-- **Fase:** 6 — PWA móvil (completada, pivot desde native Expo)
-- **Paso dentro de la fase:** manifest dinámico, iconos generados con
-  ImageResponse (192x192 + 180x180 Apple), service worker con cache
-  estrategia consciente de E2EE, InstallPrompt UI con soporte
-  Chrome/Android + guía manual iOS, chat responsive para móvil con
-  botón atrás, meta tags apple-mobile-web-app. Respeta safe-area para
-  notch/isla.
+- **Fase:** 7 — Producción (completada, cierra el proyecto)
+- **Paso dentro de la fase:** template de Traefik dinámico con TLS
+  + HSTS + CSP + rate limit, unidades systemd para API/web con
+  auto-restart, script de backup diario cifrado con GPG AES-256 +
+  timer systemd, script de restore para disaster recovery, helper
+  install-systemd.sh, checklist de producción documentado.
 - **Última actualización:** 2026-04-17
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
-- **Deploy actual:** API v0.5.0 corriendo en el VPS de Hostinger detrás
-  de `tsx` (no `node dist/`) para que los workspace packages se
-  resuelvan. Admin creado, login funcional.
+- **Deploy actual:** API v0.5.0 en staging (HTTP:3100/4000 por IP);
+  pendiente migrar a producción (HTTPS vía Traefik + dominio + systemd
+  + backups).
 
 ## Próximos pasos
 
-1. **Usuario:** `git pull` en el VPS y rebuild de la web:
-   `cd apps/web && pnpm build` (ya compila con fix de `extensionAlias`).
-   Matar y relanzar `euromex-web`.
-2. **Usuario:** probar PWA en móvil:
-   - Chrome/Android: el banner "Instalar" aparece automáticamente.
-   - Safari iOS: Compartir ⬆ → "Añadir a pantalla de inicio".
-3. **Limitación HTTP actual:** los service workers solo se registran
-   en HTTPS (o localhost). Con IP http staging, la app es instalable
-   y usable pero sin cache offline ni push. Se activa todo al pasar a
-   HTTPS en Fase 7.
-4. Iniciar **Fase 7 — Producción**: apuntar subdominio al VPS,
-   integrar nuestras apps al Traefik existente (Docker labels),
-   Let's Encrypt automático, systemd units, backups cifrados, script
-   de rotación de logs. Esta fase cierra el proyecto y lo deja listo
-   para usuarios reales.
+1. **Usuario — cuando tengas dominio apuntando al VPS:** seguir la
+   sección "Fase 7 — Producción" de `HOSTINGER.md` paso por paso.
+   Incluye:
+   - Copiar `infra/traefik/euromex.yml` al dir dinámico de Traefik
+     (reemplazando dominios).
+   - Actualizar `CORS_ORIGINS` y `NEXT_PUBLIC_API_BASE` a https.
+   - Ejecutar `install-systemd.sh` para migrar de nohup a systemd.
+   - Cerrar puertos 3100/4000 en el firewall externo de Hostinger.
+   - Configurar `/etc/euromex/backup.env` con la passphrase de backup
+     y habilitar el timer.
+2. **Usuario — post-producción:** ejecutar el checklist de Fase 7
+   en `HOSTINGER.md` (13 items: DNS, cert, SSL Labs A+, reboot test,
+   firewall cerrado, backup manual exitoso, passphrases en 2 gestores,
+   PWA instalable con candado verde, smoke test E2EE end-to-end).
+3. **Proyecto cerrado.** Mejoras futuras (opcionales, sin orden):
+   - Build proper de `@euromex/shared` y `@euromex/crypto` a `dist/`
+     para correr con `node` en vez de `tsx` (más rápido cold-start).
+   - Push notifications web (requiere service worker activo → HTTPS
+     ya cubierto, falta integrar VAPID keys).
+   - Panel admin expandido (listar usuarios, revocar devices desde
+     UI, audit log browser).
+   - Monitoring: uptime-kuma autoinstalado o Grafana+Loki si crece
+     el equipo.
+   - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-04-17] Fase 7 — Traefik con file provider (no Docker labels)
+
+- **Qué se decidió:** el routing Traefik se configura vía un archivo
+  YAML en su directorio dinámico (`infra/traefik/euromex.yml`) con
+  servicios apuntando a `http://172.17.0.1:3100` (web) y `:4000`
+  (API). No dockerizamos los procesos Node en contenedores.
+- **Por qué:**
+  - Los procesos Node corren en el host bajo systemd (mejor control,
+    reboot-safe, journalctl unificado).
+  - Evitamos reescribir la topología — el código que estabas probando
+    en staging es el mismo en producción, solo cambia el reverse
+    proxy por delante.
+  - Traefik soporta múltiples providers simultáneamente; el file
+    provider coexiste con el Docker provider que n8n usa.
+  - `172.17.0.1` es el bridge default de Docker — desde el contenedor
+    Traefik ve al host del VPS allí.
+- **Alternativa considerada:** dockerizar API y web con labels. Más
+  idiomático con el resto del stack, pero requiere Dockerfiles y
+  reconstruir imagenes en cada deploy. Overkill para <25 usuarios.
+- **Impacto:** `infra/traefik/euromex.yml`, systemd units.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 7 — tsx en producción (no node dist/)
+
+- **Qué se decidió:** el servicio systemd lanza la API con `tsx
+  src/server.ts`, mismo comando que staging. NO migramos a
+  `node dist/server.js`.
+- **Por qué:** los paquetes workspace (`@euromex/shared`,
+  `@euromex/crypto`) exportan `.ts` directamente — correr con plain
+  node requeriría añadir build steps a esos paquetes y reescribir
+  sus `exports`. Trabajo no trivial, beneficio marginal:
+  - tsx tiene ~200ms de arranque extra (invisible con systemd
+    restart-on-failure).
+  - Runtime idéntico a node (esbuild transpila once, caché en memoria).
+  - Seguridad igual — tsx no ejecuta código distinto, solo lo tipea.
+  - Simplicidad: un solo comando para dev y prod, menos sorpresas.
+- **Deuda técnica reconocida:** migrar a node+dist es una optimización
+  de Fase 8+ si alguna vez se hace. Documentado en "mejoras futuras".
+- **Impacto:** `infra/systemd/euromex-api.service`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 7 — Backups con GPG symmetric (no asimétrico)
+
+- **Qué se decidió:** los backups se cifran con `gpg --symmetric
+  --cipher-algo AES256` usando una passphrase en
+  `/etc/euromex/backup.env` (permisos 600).
+- **Por qué:**
+  - Symmetric evita gestionar un keyring GPG de cuenta + ring de
+    confianza. Una passphrase, un secreto, fácil de rotar.
+  - AES256 es el estándar. Passphrase de 48 bytes base64 = 384 bits
+    de entropía — muy por encima del ataque de fuerza bruta.
+  - Si alguna vez se quiere migrar a keys asimétricas (p.ej. backup
+    a storage público con clave solo en laptop offline), el script
+    se adapta en 3 líneas.
+- **Protocolo de recuperación:** `restore.sh` requiere confirmación
+  escrita ("RESTORE") y la passphrase — evita restores accidentales
+  que destruirían la DB actual.
+- **Impacto:** `infra/scripts/backup.sh`, `restore.sh`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 7 — Dos subdominios (chat + api.chat) vs path prefix
+
+- **Qué se decidió:** separar por subdominio (`chat.euromex.com.mx`
+  para web, `api.chat.euromex.com.mx` para API) en vez de servir
+  ambos en el mismo host con prefix `/api`.
+- **Por qué:**
+  - CORS queda limpio — el web solo permite ese dominio de API, sin
+    hacks de same-origin.
+  - El Socket.IO se conecta a `wss://api.chat...` directamente, sin
+    rewrites de Traefik.
+  - Cookies y CSP son predecibles.
+  - El CSP `connect-src` lista un host concreto en vez de `*`.
+  - Let's Encrypt emite dos certs — gratis y automático.
+- **Alternativa considerada:** single domain + Next.js rewrites al API.
+  Forzaría todo tráfico a pasar por Next.js incluido socket.io, más
+  latencia y complejidad.
+- **Impacto:** `infra/traefik/euromex.yml`, vars de entorno.
+- **Propuesto por:** Claude.
 
 ### [2026-04-17] Fase 6 — PWA en lugar de React Native Expo
 

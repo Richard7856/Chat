@@ -1,0 +1,136 @@
+# Configuración dinámica de Traefik para Euromex Chat.
+#
+# Cómo se usa:
+#   1. Copia este archivo a donde tu Traefik lee dynamic configs. Para
+#      encontrar el path:
+#        docker inspect root-traefik-1 \
+#          --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
+#      Busca el mount que apunte a /etc/traefik, /dynamic o similar.
+#   2. Reemplaza TODOS los `chat.example.com` y `api.chat.example.com`
+#      por tus dominios reales.
+#   3. Reemplaza `letsencrypt` por el nombre de tu certResolver si tu
+#      Traefik usa otro (el default suele ser 'letsencrypt' o 'myresolver').
+#   4. Traefik recarga automáticamente al detectar el archivo nuevo.
+#      Verifica con: docker logs root-traefik-1 --tail 40
+#
+# Topología:
+#   Internet (443) → Traefik → http://172.17.0.1:3100 (web Next.js)
+#   Internet (443) → Traefik → http://172.17.0.1:4000 (API Fastify)
+#
+# 172.17.0.1 es el gateway del bridge network default de Docker — apunta
+# al host desde dentro del contenedor Traefik. Si tu Traefik está en otra
+# red Docker, usa `host.docker.internal` en su lugar.
+
+http:
+  # ==========================================================================
+  # Routers
+  # ==========================================================================
+  routers:
+    euromex-web:
+      rule: "Host(`chat.example.com`)"
+      entryPoints:
+        - websecure
+      service: euromex-web
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - euromex-security
+        - euromex-rate-limit
+
+    euromex-api:
+      rule: "Host(`api.chat.example.com`)"
+      entryPoints:
+        - websecure
+      service: euromex-api
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - euromex-security
+        - euromex-rate-limit
+
+    # Redirect HTTP → HTTPS (si tu Traefik aún no tiene uno global)
+    euromex-web-http:
+      rule: "Host(`chat.example.com`) || Host(`api.chat.example.com`)"
+      entryPoints:
+        - web
+      service: euromex-web
+      middlewares:
+        - euromex-https-redirect
+
+  # ==========================================================================
+  # Services (backends)
+  # ==========================================================================
+  services:
+    euromex-web:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://172.17.0.1:3100"
+
+    euromex-api:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://172.17.0.1:4000"
+
+  # ==========================================================================
+  # Middlewares
+  # ==========================================================================
+  middlewares:
+    euromex-https-redirect:
+      redirectScheme:
+        scheme: https
+        permanent: true
+
+    euromex-security:
+      headers:
+        # HSTS — forzar HTTPS durante 1 año, incluye subdominios.
+        # Cuidado: después de activar preload, quitarlo requiere 4-6 meses.
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: false
+        forceSTSHeader: true
+
+        # Clickjacking, MIME sniffing, XSS reflejado
+        frameDeny: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+
+        # CSP conservador. Permite 'unsafe-inline' + 'unsafe-eval' porque
+        # Next.js los requiere para su runtime. connect-src y ws: cubren
+        # el WebSocket de Socket.IO. data:/blob: para el QR TOTP y para
+        # los adjuntos descifrados en memoria.
+        contentSecurityPolicy: >-
+          default-src 'self';
+          script-src 'self' 'unsafe-inline' 'unsafe-eval';
+          style-src 'self' 'unsafe-inline';
+          img-src 'self' data: blob:;
+          font-src 'self' data:;
+          connect-src 'self' https://api.chat.example.com wss://api.chat.example.com;
+          worker-src 'self' blob:;
+          manifest-src 'self';
+          object-src 'none';
+          base-uri 'self';
+          form-action 'self';
+          frame-ancestors 'none';
+
+        # Permissions Policy — deshabilita APIs que no usamos.
+        permissionsPolicy: >-
+          camera=(), microphone=(), geolocation=(), payment=(),
+          usb=(), magnetometer=(), accelerometer=(), gyroscope=()
+
+        # Extra para API: evita que cualquier website inserte nuestra API.
+        customResponseHeaders:
+          Cross-Origin-Resource-Policy: "same-site"
+          Cross-Origin-Opener-Policy: "same-origin"
+
+    euromex-rate-limit:
+      rateLimit:
+        # 300 requests/min por IP (burst 50). Ajusta según tu tráfico.
+        average: 300
+        period: 1m
+        burst: 50
+        sourceCriterion:
+          ipStrategy:
+            depth: 1 # si tu Traefik está detrás de Cloudflare, sube a 2

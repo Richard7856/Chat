@@ -1,0 +1,16 @@
+[Unit]
+Description=Euromex Chat — backup diario cifrado
+Documentation=file:///opt/euromex/infra/scripts/backup.sh
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Lee EUROMEX_BACKUP_PASSPHRASE (y opcionales KEEP_DAYS, REMOTE_RSYNC)
+EnvironmentFile=/etc/euromex/backup.env
+ExecStart=/opt/euromex/infra/scripts/backup.sh
+
+# No reiniciar ante fallo — el timer ya re-disparará mañana.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=euromex-backup

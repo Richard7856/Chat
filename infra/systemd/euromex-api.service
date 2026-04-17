@@ -1,0 +1,41 @@
+[Unit]
+Description=Euromex Chat — API (Fastify + Socket.IO)
+Documentation=https://github.com/richard7856/chat
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/euromex/apps/api
+
+# PATH incluye los bins locales del monorepo para que `tsx` sea encontrable.
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/euromex/node_modules/.bin:/opt/euromex/apps/api/node_modules/.bin"
+
+# Arranca con tsx (resuelve .ts directamente — los paquetes workspace
+# exportan fuentes TS). Migrar a `node dist/` requiere builds de shared+crypto.
+ExecStart=/usr/bin/env tsx src/server.ts
+
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Logs por journald (accesibles con `journalctl -u euromex-api -f`).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=euromex-api
+
+# Hardening básico
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/euromex /var/log /tmp
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

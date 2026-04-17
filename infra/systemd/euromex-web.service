@@ -1,0 +1,39 @@
+[Unit]
+Description=Euromex Chat — Web (Next.js 15)
+Documentation=https://github.com/richard7856/chat
+After=network-online.target euromex-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/euromex/apps/web
+
+Environment="NODE_ENV=production"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/euromex/node_modules/.bin"
+
+# `pnpm start` invoca `next start -p 3100`. Necesitamos pnpm global o usar
+# next directamente. Usamos next via node_modules para evitar dependencia
+# de pnpm en PATH.
+ExecStart=/usr/bin/env node /opt/euromex/node_modules/.bin/next start -p 3100
+
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=euromex-web
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/euromex /var/log /tmp
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
