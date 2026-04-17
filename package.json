@@ -1,0 +1,28 @@
+{
+  "name": "euromex-chat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chat privado self-hosted para Grupo Euromex",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=20.11.0",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "clean": "turbo run clean && rm -rf node_modules .turbo",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d",
+    "infra:down": "docker compose -f infra/docker-compose.yml down",
+    "infra:logs": "docker compose -f infra/docker-compose.yml logs -f",
+    "db:migrate": "pnpm --filter @euromex/api db:migrate"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3",
+    "typescript": "^5.6.3",
+    "@types/node": "^22.9.0"
+  }
+}
