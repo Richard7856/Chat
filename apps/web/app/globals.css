@@ -460,3 +460,20 @@ button.secondary {
 .user-row:hover {
   background: rgba(255, 255, 255, 0.04);
 }
+
+.lock {
+  font-size: 0.85rem;
+  margin-right: 0.2rem;
+  opacity: 0.85;
+}
+
+.warn-inline {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  background: rgba(255, 170, 0, 0.2);
+  color: #ffc166;
+  margin-right: 0.35rem;
+  vertical-align: middle;
+}

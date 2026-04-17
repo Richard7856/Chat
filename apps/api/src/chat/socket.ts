@@ -3,13 +3,18 @@ import { Server as SocketIOServer } from "socket.io";
 import type {
   ClientToServerEvents,
   Conversation,
+  EnvelopeInput,
   Message,
   ServerToClientEvents,
 } from "@euromex/shared";
 import { config } from "../config.js";
 import { pool } from "../db/pg.js";
 import type { SessionClaims } from "../auth/jwt.js";
-import { insertMessage, isConversationMember } from "./repo.js";
+import {
+  insertEncryptedMessage,
+  isConversationMember,
+  type IncomingEnvelope,
+} from "./repo.js";
 
 type IOServer = SocketIOServer<
   ClientToServerEvents,
@@ -26,6 +31,31 @@ declare module "fastify" {
 
 const CONV_ROOM = (id: string) => `conv:${id}`;
 const USER_ROOM = (id: string) => `user:${id}`;
+const DEVICE_ROOM = (id: string) => `device:${id}`;
+
+function normalizeEnvelopes(raw: unknown): IncomingEnvelope[] | null {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 200) return null;
+  const out: IncomingEnvelope[] = [];
+  for (const item of raw as EnvelopeInput[]) {
+    if (
+      typeof item?.recipientDeviceId !== "string" ||
+      typeof item?.ciphertext !== "string" ||
+      typeof item?.nonce !== "string"
+    ) {
+      return null;
+    }
+    try {
+      out.push({
+        recipientDeviceId: item.recipientDeviceId,
+        ciphertext: Buffer.from(item.ciphertext, "base64"),
+        nonce: Buffer.from(item.nonce, "base64"),
+      });
+    } catch {
+      return null;
+    }
+  }
+  return out;
+}
 
 export function registerSocketIO(app: FastifyInstance): IOServer {
   const io: IOServer = new SocketIOServer(app.server, {
@@ -44,7 +74,6 @@ export function registerSocketIO(app: FastifyInstance): IOServer {
       if (!token) return next(new Error("no_token"));
       const claims = app.jwt.verify<SessionClaims>(token);
 
-      // Verifica que user + device sigan activos (revocación en vivo).
       const row = await pool.query<{ u: string; d: string }>(
         `SELECT u.status AS u, d.status AS d
            FROM users u JOIN devices d ON d.user_id = u.id
@@ -66,10 +95,8 @@ export function registerSocketIO(app: FastifyInstance): IOServer {
   io.on("connection", (socket) => {
     const session = socket.data.session;
     socket.join(USER_ROOM(session.sub));
+    socket.join(DEVICE_ROOM(session.did));
 
-    // Auto-join: al conectar, mete al socket en la room de cada conversación
-    // en la que participa. Así recibe "message:new" sin tener que hacer
-    // "conversation:join" uno por uno.
     void (async () => {
       const r = await pool.query<{ conversation_id: string }>(
         "SELECT conversation_id FROM conversation_members WHERE user_id = $1",
@@ -95,28 +122,66 @@ export function registerSocketIO(app: FastifyInstance): IOServer {
       socket.leave(CONV_ROOM(conversationId));
     });
 
-    socket.on("message:send", async ({ conversationId, content, clientId }, ack) => {
+    socket.on("message:send", async (payload, ack) => {
       try {
-        if (typeof content !== "string" || content.length === 0 || content.length > 4000) {
-          ack?.({ ok: false, error: "invalid_content" });
+        const { conversationId, clientId, contentType, envelopes } = payload;
+        if (typeof conversationId !== "string" || typeof clientId !== "string") {
+          ack?.({ ok: false, error: "invalid_payload" });
           return;
         }
-        if (typeof clientId !== "string" || clientId.length < 8) {
-          ack?.({ ok: false, error: "invalid_client_id" });
+        const ct = typeof contentType === "string" ? contentType : "text/plain";
+
+        const normalized = normalizeEnvelopes(envelopes);
+        if (!normalized) {
+          ack?.({ ok: false, error: "invalid_envelopes" });
           return;
         }
         if (!(await isConversationMember(session.sub, conversationId))) {
           ack?.({ ok: false, error: "not_a_member" });
           return;
         }
-        const msg = await insertMessage({
+
+        const res = await insertEncryptedMessage({
           conversationId,
           senderUserId: session.sub,
           senderDeviceId: session.did,
-          content,
+          contentType: ct,
+          envelopes: normalized,
         });
-        io.to(CONV_ROOM(conversationId)).emit("message:new", msg);
-        ack?.({ ok: true, message: msg });
+
+        fanOutMessage(io, {
+          messageId: res.messageId,
+          createdAt: res.createdAt,
+          conversationId,
+          senderUserId: session.sub,
+          senderDeviceId: session.did,
+          contentType: ct,
+          envelopes: res.envelopes,
+        });
+
+        // ACK al emisor con la vista del mensaje "sin sobre propio";
+        // el emisor renderiza su propio plaintext porque ya lo tiene.
+        const ownEnv = res.envelopes.find(
+          (e) => e.recipientDeviceId === session.did,
+        );
+        ack?.({
+          ok: true,
+          message: {
+            id: res.messageId,
+            conversationId,
+            senderUserId: session.sub,
+            senderDeviceId: session.did,
+            content: null,
+            contentType: ct,
+            createdAt: res.createdAt.toISOString(),
+            envelope: ownEnv
+              ? {
+                  ciphertext: ownEnv.ciphertext.toString("base64"),
+                  nonce: ownEnv.nonce.toString("base64"),
+                }
+              : null,
+          },
+        });
       } catch (err) {
         app.log.error({ err }, "socket.message:send failed");
         ack?.({ ok: false, error: "internal" });
@@ -137,8 +202,43 @@ export function registerSocketIO(app: FastifyInstance): IOServer {
   return io;
 }
 
-export function broadcastMessage(app: FastifyInstance, msg: Message) {
-  app.io?.to(CONV_ROOM(msg.conversationId)).emit("message:new", msg);
+function fanOutMessage(
+  io: IOServer,
+  params: {
+    messageId: string;
+    createdAt: Date;
+    conversationId: string;
+    senderUserId: string;
+    senderDeviceId: string;
+    contentType: string;
+    envelopes: Array<{
+      recipientDeviceId: string;
+      ciphertext: Buffer;
+      nonce: Buffer;
+    }>;
+  },
+) {
+  const base = {
+    id: params.messageId,
+    conversationId: params.conversationId,
+    senderUserId: params.senderUserId,
+    senderDeviceId: params.senderDeviceId,
+    content: null,
+    contentType: params.contentType,
+    createdAt: params.createdAt.toISOString(),
+  };
+
+  for (const env of params.envelopes) {
+    if (env.recipientDeviceId === params.senderDeviceId) continue;
+    const msg: Message = {
+      ...base,
+      envelope: {
+        ciphertext: env.ciphertext.toString("base64"),
+        nonce: env.nonce.toString("base64"),
+      },
+    };
+    io.to(DEVICE_ROOM(env.recipientDeviceId)).emit("message:new", msg);
+  }
 }
 
 export function broadcastConversationUpdated(

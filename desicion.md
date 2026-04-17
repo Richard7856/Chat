@@ -6,30 +6,102 @@
 
 ## Estado actual
 
-- **Fase:** 3 — Mensajería en claro (completada)
-- **Paso dentro de la fase:** API con Socket.IO + REST de conversaciones,
-  UI web de chat con sidebar + burbujas + modal de nueva conversación,
-  esquema SQL actualizado con migración delta. El usuario está
-  configurando el VPS en paralelo.
+- **Fase:** 4 — E2EE (completada)
+- **Paso dentro de la fase:** `packages/crypto` con NaCl (tweetnacl), API
+  acepta envelopes cifrados, web genera + publica identity key en login
+  y enroll, chat cifra y descifra en cliente. Fix de build de Next.js
+  (Suspense en /enroll). Mensajes legados de Fase 3 siguen legibles con
+  badge "📜 sin cifrar".
 - **Última actualización:** 2026-04-17
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
 
 ## Próximos pasos
 
-1. **Usuario:** terminar deploy en el VPS siguiendo `HOSTINGER.md`.
-   Confirmar: `/health` OK, login admin, emitir invitación, probar
-   enrollment desde otro navegador, enviar y recibir mensajes en
-   tiempo real entre dos usuarios.
-2. **Si la DB ya existe con datos de Fase 2:** aplicar la migración
-   `apps/api/src/db/migrations/001-add-message-content.sql` (añade
-   columna `content` a `messages`).
-3. Iniciar **Fase 4 — E2EE con Signal Protocol**: `packages/crypto`
-   con wrappers de `@signalapp/libsignal-client`, key bundles por
-   dispositivo, migración de `messages.content` plaintext a
-   `message_envelopes` ciphertext, safety numbers en UI.
+1. **Usuario:** `git pull` en el VPS y `pnpm build` — debería pasar ya
+   (el error anterior en /enroll está arreglado).
+2. **Usuario:** aplicar la migración `002-enable-e2ee.sql` en la DB
+   existente (añade columna `nonce` a `message_envelopes`). Instrucción
+   exacta en `HOSTINGER.md`.
+3. **Usuario:** smoke test E2EE: dos navegadores con dos usuarios,
+   abrir un DM, enviar mensaje. Verificar en la DB (`SELECT content,
+   ciphertext FROM messages LEFT JOIN message_envelopes ON ...`) que
+   `content` es NULL y `ciphertext` es bytes aleatorios.
+4. Iniciar **Fase 5 — Adjuntos cifrados**: MinIO/S3, cifrado cliente
+   AES-GCM de archivos, thumbnails locales.
 
 ## Historial de decisiones
+
+### [2026-04-17] Fase 4 — NaCl (tweetnacl) en vez de Signal Protocol / libsodium-wrappers
+
+- **Qué se decidió:** implementar E2EE con el patrón `nacl.box` (X25519 +
+  XSalsa20-Poly1305) de `tweetnacl`, en vez de `@signalapp/libsignal-client`
+  como prometí en el plan original.
+- **Por qué:**
+  - `@signalapp/libsignal-client` solo funciona en Node.js con bindings
+    nativos (Rust). No corre en el navegador → si el cifrado ocurre en el
+    servidor el E2EE pierde sentido (el servidor vería el plaintext).
+  - Primer intento con `libsodium-wrappers`: falla en el build de Next.js
+    por problema de resolución ESM de `./libsodium.mjs`. Añadir webpack
+    overrides es frágil.
+  - `tweetnacl` es pure JS, tamaño minúsculo, usado por millones de
+    proyectos (Signal mismo lo auditó históricamente), funciona en
+    Node + navegador + React Native sin configuración de webpack.
+  - El algoritmo (`box` = X25519 + XSalsa20-Poly1305) es el MISMO que usa
+    `libsodium.crypto_box`. La diferencia es solo el wrapper.
+- **Trade-off aceptado:** sin forward secrecy (Double Ratchet). Si un
+  atacante roba la private key del dispositivo, puede descifrar mensajes
+  pasados. Mitigación realista: revocación inmediata de dispositivo vía
+  admin + rotación del keypair. Upgrade a Double Ratchet es Fase 5+.
+- **Impacto:** `packages/crypto/*` (ahora con tweetnacl), wiring en
+  `apps/web/app/lib/keys.ts`, `apps/web/app/app/chat/page.tsx`.
+- **Propuesto por:** Claude tras probar libsodium-wrappers y detectar
+  el error de build de webpack.
+
+### [2026-04-17] Fase 4 — Encriptación por dispositivo (fan-out) con cache de claves
+
+- **Qué se decidió:** el cliente cifra una vez por cada dispositivo
+  destinatario (incluyendo sus propios otros dispositivos) y envía N
+  envelopes al servidor. El servidor los guarda en `message_envelopes`
+  y emite `message:new` a cada `device:<id>` con SOLO el sobre de ese
+  dispositivo. El cliente cachea las claves públicas de la conversación
+  y las refresca cuando aparece un sender desconocido.
+- **Por qué:** es la solución mínima que cumple las garantías E2EE. El
+  servidor nunca ve plaintext. Cada dispositivo recibe solo lo suyo.
+  Para <25 usuarios × pocos dispositivos, el costo de fan-out es
+  despreciable.
+- **Impacto:** endpoint nuevo `GET /conversations/:id/device-keys`,
+  `POST /auth/devices/publish-identity`, rooms `device:<id>` en
+  Socket.IO, helpers `insertEncryptedMessage` y `getConversationDeviceKeys`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 4 — Clave privada en localStorage, en claro
+
+- **Qué se decidió:** la clave privada X25519 del dispositivo se guarda
+  en `localStorage` en base64, sin cifrar con contraseña del usuario.
+  Se limpia al hacer logout.
+- **Por qué:** la frontera de seguridad ya es el acceso al dispositivo
+  del usuario. Si un atacante llega a `localStorage` también llega a la
+  sesión JWT (mismo storage). Cifrar la key con la contraseña del usuario
+  añade seguridad *solo* si el atacante tiene el storage pero no la
+  contraseña — escenario raro. Cifrar con password requiere re-pedir la
+  password en cada recarga, mata UX.
+- **Alternativa a futuro:** cifrar la privada con una clave derivada
+  de WebAuthn + PIN del navegador (Passkey-wrapped). Es Fase 6+.
+- **Impacto:** `apps/web/app/lib/keys.ts`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 4 — /enroll requiere Suspense en Next.js 15
+
+- **Qué se decidió:** envolver el contenido de `/enroll/page.tsx` en
+  `<Suspense>` porque usa `useSearchParams()`.
+- **Por qué:** Next.js 15 requiere Suspense boundary alrededor de
+  `useSearchParams()` para que la prerenderización estática no falle.
+  Latente desde Fase 2; se disparó cuando el usuario ejecutó
+  `pnpm build` en el VPS.
+- **Impacto:** `apps/web/app/enroll/page.tsx`.
+- **Propuesto por:** Claude tras ver el log de error del usuario en el
+  VPS.
 
 ### [2026-04-17] Fase 3 — Socket.IO integrado al servidor Fastify
 
@@ -283,6 +355,49 @@
 - **Propuesto por:** usuario.
 
 ## Cambios por versión
+
+### v0.4.0 — 2026-04-17 — E2EE (Fase 4)
+
+- **Agregado:**
+  - `packages/crypto/*`: wrapper mínimo de tweetnacl (`generateIdentityKeypair`,
+    `encryptFor`, `decryptFrom`, helpers base64 y UTF-8, `safetyNumber`).
+  - `apps/web/app/lib/keys.ts`: gestión de identity keypair por dispositivo
+    (generar, cachear en localStorage, publicar public key al server,
+    limpiar al logout).
+  - `apps/api/src/chat/repo.ts`:
+    `insertEncryptedMessage` transaccional,
+    `getConversationDeviceKeys`,
+    `publishDeviceIdentity`,
+    `listMessages` ahora retorna el envelope del dispositivo requester.
+  - Endpoints nuevos:
+    `POST /auth/devices/publish-identity`,
+    `GET /conversations/:id/device-keys`.
+  - Socket.IO: room `device:<id>`, fan-out por dispositivo en `message:send`.
+  - Schemas shared: `EnvelopeInput`, `PublishIdentityRequest`, `DeviceKey`;
+    `Message.envelope` nullable; `SendMessageRequest` con `envelopes`.
+  - Migración `apps/api/src/db/migrations/002-enable-e2ee.sql`.
+  - Fix: `/enroll` envuelto en `<Suspense>` para `next build`.
+- **Modificado:**
+  - `apps/web/app/app/chat/page.tsx`: pipeline completo E2EE (cifra al
+    enviar, descifra al recibir, cachea device-keys, renderiza estados
+    `ok`/`legacy`/`no_envelope`/`decrypt_error`, icono 🔒 en header).
+  - `apps/web/app/login/page.tsx` y `apps/web/app/enroll/page.tsx`:
+    llaman a `ensureDeviceKeypair` antes de navegar al chat, y redirigen
+    a `/app/chat` en vez de `/app`.
+  - `apps/api/src/db/schema.sql`: columna `nonce BYTEA` en
+    `message_envelopes`.
+- **Removido:**
+  - `insertMessage` legacy reemplazado por `insertEncryptedMessage`.
+  - Helper `broadcastMessage`: el fan-out vive ahora en el propio
+    socket.ts + routes/conversations.ts.
+- **Decisiones referenciadas:** tweetnacl en vez de Signal Protocol,
+  fan-out por dispositivo, clave privada en localStorage, Suspense en
+  `/enroll`.
+- **Verificación:** `pnpm -r run typecheck` + `cd apps/web && pnpm build`
+  pasan limpios. Smoke test E2EE pendiente en el VPS: abrir 2
+  navegadores, loguearse con 2 usuarios, enviar mensajes, confirmar
+  que en la DB `messages.content IS NULL` y `message_envelopes.ciphertext`
+  son bytes no legibles.
 
 ### v0.3.0 — 2026-04-17 — Mensajería en claro (Fase 3)
 

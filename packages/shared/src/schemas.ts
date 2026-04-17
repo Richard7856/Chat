@@ -196,24 +196,58 @@ export type CreateConversationRequest = z.infer<
   typeof CreateConversationRequestSchema
 >;
 
+/** Base64 (variante ORIGINAL, con padding) de libsodium. */
+export const Base64Schema = z
+  .string()
+  .regex(/^[A-Za-z0-9+/]+={0,2}$/, "base64 esperado");
+
+export const EnvelopeInputSchema = z.object({
+  recipientDeviceId: z.string().uuid(),
+  ciphertext: Base64Schema,
+  nonce: Base64Schema,
+});
+export type EnvelopeInput = z.infer<typeof EnvelopeInputSchema>;
+
 export const MessageSchema = z.object({
   id: z.string().uuid(),
   conversationId: z.string().uuid(),
   senderUserId: z.string().uuid(),
   senderDeviceId: z.string().uuid(),
+  /** Solo para mensajes legados de Fase 3 (sin E2EE). En Fase 4 es null. */
   content: z.string().nullable(),
   contentType: z.string(),
   createdAt: z.string().datetime(),
+  /** Sobre dirigido a MI dispositivo, si existe. Null en mensajes Fase 3
+   *  o si mi dispositivo no estaba activo cuando se envió. */
+  envelope: z
+    .object({ ciphertext: Base64Schema, nonce: Base64Schema })
+    .nullable(),
 });
 export type Message = z.infer<typeof MessageSchema>;
 
 export const SendMessageRequestSchema = z.object({
-  content: z.string().min(1).max(4000),
   contentType: z.string().default("text/plain"),
   /** ID generado en cliente para dedupe + optimistic UI. */
   clientId: z.string().uuid(),
+  envelopes: z.array(EnvelopeInputSchema).min(1).max(200),
 });
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>;
+
+export const PublishIdentityRequestSchema = z.object({
+  identityPublicKey: Base64Schema,
+});
+export type PublishIdentityRequest = z.infer<
+  typeof PublishIdentityRequestSchema
+>;
+
+export const DeviceKeySchema = z.object({
+  deviceId: z.string().uuid(),
+  userId: z.string().uuid(),
+  identityPublicKey: Base64Schema.nullable(),
+  deviceName: z.string(),
+  platform: DevicePlatformSchema,
+});
+export type DeviceKey = z.infer<typeof DeviceKeySchema>;
 
 // ============================================================================
 // Socket.IO events
@@ -230,7 +264,12 @@ export interface ClientToServerEvents {
   "conversation:join": (conversationId: string, ack?: (ok: boolean) => void) => void;
   "conversation:leave": (conversationId: string) => void;
   "message:send": (
-    p: { conversationId: string; content: string; clientId: string },
+    p: {
+      conversationId: string;
+      clientId: string;
+      contentType: string;
+      envelopes: EnvelopeInput[];
+    },
     ack?: (res: { ok: true; message: Message } | { ok: false; error: string }) => void,
   ) => void;
   "typing:set": (p: { conversationId: string; typing: boolean }) => void;

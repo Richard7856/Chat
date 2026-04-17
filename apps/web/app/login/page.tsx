@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, saveSession } from "../lib/api";
+import { ensureDeviceKeypair } from "../lib/keys";
 
 interface AuthSuccess {
   accessToken: string;
@@ -33,7 +34,8 @@ export default function LoginPage() {
         body: { username, password, totpToken, deviceName, platform: "web" },
       });
       saveSession(res);
-      router.push("/app");
+      await ensureDeviceKeypair(res.device.id);
+      router.push("/app/chat");
     } catch (err) {
       setError(err instanceof Error ? err.message : "error");
     } finally {

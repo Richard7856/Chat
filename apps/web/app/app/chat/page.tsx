@@ -4,10 +4,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type {
   Conversation,
+  DeviceKey,
   Message,
   UserListItem,
 } from "@euromex/shared";
+import {
+  decodeUtf8,
+  decryptFrom,
+  encodeUtf8,
+  encryptFor,
+  envelopeFromBase64,
+  fromBase64,
+  ready,
+  toBase64,
+  type IdentityKeypair,
+} from "@euromex/crypto";
 import { api, clearSession, loadSession } from "../../lib/api";
+import { ensureDeviceKeypair, clearKeypair } from "../../lib/keys";
 import { closeSocket, getSocket } from "../../lib/socket";
 
 interface MeResponse {
@@ -26,12 +39,21 @@ interface MeResponse {
   };
 }
 
+interface RenderedMessage extends Message {
+  plaintext: string | null;
+  /** 'ok' | 'legacy' (texto plano Fase 3) | 'no_envelope' | 'decrypt_error' */
+  status: "ok" | "legacy" | "no_envelope" | "decrypt_error";
+}
+
+type DeviceKeyMap = Record<string, DeviceKey>;
+
 export default function ChatPage() {
   const router = useRouter();
   const [me, setMe] = useState<MeResponse | null>(null);
+  const [myKeypair, setMyKeypair] = useState<IdentityKeypair | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<RenderedMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [showNew, setShowNew] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -39,9 +61,37 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  /** Cache de claves públicas por deviceId (para descifrar mensajes entrantes
+   *  y cifrar los salientes). Se refresca al entrar a una conversación. */
+  const deviceKeysRef = useRef<DeviceKeyMap>({});
+
   const selectedConv = useMemo(
     () => conversations.find((c) => c.id === selectedId) ?? null,
     [conversations, selectedId],
+  );
+
+  const decryptMessage = useCallback(
+    async (msg: Message, kp: IdentityKeypair): Promise<RenderedMessage> => {
+      if (msg.content !== null && msg.envelope === null) {
+        return { ...msg, plaintext: msg.content, status: "legacy" };
+      }
+      if (!msg.envelope) {
+        return { ...msg, plaintext: null, status: "no_envelope" };
+      }
+      const senderKey = deviceKeysRef.current[msg.senderDeviceId];
+      if (!senderKey?.identityPublicKey) {
+        return { ...msg, plaintext: null, status: "decrypt_error" };
+      }
+      try {
+        const senderPub = await fromBase64(senderKey.identityPublicKey);
+        const env = await envelopeFromBase64(msg.envelope);
+        const pt = await decryptFrom(env, senderPub, kp.privateKey);
+        return { ...msg, plaintext: await decodeUtf8(pt), status: "ok" };
+      } catch {
+        return { ...msg, plaintext: null, status: "decrypt_error" };
+      }
+    },
+    [],
   );
 
   const refreshConversations = useCallback(async () => {
@@ -52,7 +102,17 @@ export default function ChatPage() {
     setConversations(r.conversations);
   }, []);
 
-  // Bootstrap: sesión + me + conversaciones + socket
+  const refreshDeviceKeys = useCallback(async (conversationId: string) => {
+    const r = await api<{ devices: DeviceKey[] }>(
+      `/conversations/${conversationId}/device-keys`,
+      { method: "GET", auth: true },
+    );
+    const map: DeviceKeyMap = {};
+    for (const d of r.devices) map[d.deviceId] = d;
+    deviceKeysRef.current = { ...deviceKeysRef.current, ...map };
+  }, []);
+
+  // Bootstrap: sesión + me + keypair + conversaciones + socket
   useEffect(() => {
     if (!loadSession()) {
       router.replace("/login");
@@ -60,11 +120,15 @@ export default function ChatPage() {
     }
     (async () => {
       try {
-        const [meRes] = await Promise.all([
-          api<MeResponse>("/auth/me", { method: "GET", auth: true }),
-          refreshConversations(),
-        ]);
+        await ready();
+        const meRes = await api<MeResponse>("/auth/me", {
+          method: "GET",
+          auth: true,
+        });
         setMe(meRes);
+        const kp = await ensureDeviceKeypair(meRes.device.id);
+        setMyKeypair(kp);
+        await refreshConversations();
       } catch (err) {
         setError(err instanceof Error ? err.message : "error");
         clearSession();
@@ -73,12 +137,28 @@ export default function ChatPage() {
       }
     })();
 
+    return () => {
+      closeSocket();
+    };
+  }, [router, refreshConversations]);
+
+  // Socket: escucha mensajes y conversaciones nuevas
+  useEffect(() => {
+    if (!me || !myKeypair) return;
     const socket = getSocket();
-    socket.on("message:new", (msg) => {
+
+    const onNew = async (msg: Message) => {
+      // Si el sender no está en cache, refresca las device-keys.
+      if (!deviceKeysRef.current[msg.senderDeviceId]) {
+        try {
+          await refreshDeviceKeys(msg.conversationId);
+        } catch {}
+      }
+      const rendered = await decryptMessage(msg, myKeypair);
       setMessages((prev) => {
         if (msg.conversationId !== selectedIdRef.current) return prev;
-        if (prev.some((m) => m.id === msg.id)) return prev;
-        return [...prev, msg];
+        if (prev.some((m) => m.id === rendered.id)) return prev;
+        return [...prev, rendered];
       });
       setConversations((prev) => {
         const idx = prev.findIndex((c) => c.id === msg.conversationId);
@@ -88,7 +168,7 @@ export default function ChatPage() {
         conv.lastMessage = {
           id: msg.id,
           senderUserId: msg.senderUserId,
-          content: msg.content,
+          content: rendered.plaintext,
           createdAt: msg.createdAt,
         };
         if (msg.conversationId !== selectedIdRef.current) {
@@ -97,8 +177,9 @@ export default function ChatPage() {
         updated.splice(idx, 1);
         return [conv, ...updated];
       });
-    });
-    socket.on("conversation:updated", (conv) => {
+    };
+
+    const onConvUpdated = (conv: Conversation) => {
       setConversations((prev) => {
         const idx = prev.findIndex((c) => c.id === conv.id);
         if (idx >= 0) {
@@ -108,44 +189,50 @@ export default function ChatPage() {
         }
         return [conv, ...prev];
       });
-    });
-
-    return () => {
-      closeSocket();
     };
-  }, [router, refreshConversations]);
 
-  // Mantiene una ref con selectedId para usarla dentro del handler del socket
-  // sin re-suscribirse cada vez que cambia.
+    socket.on("message:new", onNew);
+    socket.on("conversation:updated", onConvUpdated);
+    return () => {
+      socket.off("message:new", onNew);
+      socket.off("conversation:updated", onConvUpdated);
+    };
+  }, [me, myKeypair, decryptMessage, refreshDeviceKeys]);
+
+  // Mantiene ref con selectedId para handlers del socket
   const selectedIdRef = useRef<string | null>(null);
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
-  // Carga mensajes al cambiar de conversación
+  // Carga mensajes + device keys al cambiar de conversación
   useEffect(() => {
-    if (!selectedId) {
+    if (!selectedId || !myKeypair) {
       setMessages([]);
       return;
     }
     (async () => {
+      await refreshDeviceKeys(selectedId);
       const r = await api<{ messages: Message[] }>(
         `/conversations/${selectedId}/messages?limit=50`,
         { method: "GET", auth: true },
       );
-      setMessages(r.messages);
+      const rendered = await Promise.all(
+        r.messages.map((m) => decryptMessage(m, myKeypair)),
+      );
+      setMessages(rendered);
       try {
-        await api(`/conversations/${selectedId}/read`, { method: "POST", auth: true });
+        await api(`/conversations/${selectedId}/read`, {
+          method: "POST",
+          auth: true,
+        });
       } catch {}
       setConversations((prev) =>
-        prev.map((c) =>
-          c.id === selectedId ? { ...c, unreadCount: 0 } : c,
-        ),
+        prev.map((c) => (c.id === selectedId ? { ...c, unreadCount: 0 } : c)),
       );
     })();
-  }, [selectedId]);
+  }, [selectedId, myKeypair, refreshDeviceKeys, decryptMessage]);
 
-  // Auto-scroll al final cuando llegan mensajes
   useEffect(() => {
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
@@ -155,24 +242,59 @@ export default function ChatPage() {
 
   async function onSend(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedId || !draft.trim() || !me) return;
+    if (!selectedId || !draft.trim() || !me || !myKeypair) return;
     const content = draft.trim();
     const clientId = crypto.randomUUID();
     setDraft("");
     setSending(true);
     try {
+      await refreshDeviceKeys(selectedId);
+      const plaintextBytes = await encodeUtf8(content);
+      const recipients = Object.values(deviceKeysRef.current).filter(
+        (d) => d.identityPublicKey,
+      );
+      if (recipients.length === 0) {
+        throw new Error("No hay dispositivos con clave pública publicada.");
+      }
+      const envelopes = await Promise.all(
+        recipients.map(async (d) => {
+          const peerPub = await fromBase64(d.identityPublicKey!);
+          const env = await encryptFor(plaintextBytes, peerPub, myKeypair.privateKey);
+          return {
+            recipientDeviceId: d.deviceId,
+            ciphertext: await toBase64(env.ciphertext),
+            nonce: await toBase64(env.nonce),
+          };
+        }),
+      );
+
       const socket = getSocket();
-      await new Promise<void>((resolve, reject) => {
+      const serverMsg = await new Promise<Message>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("timeout")), 10_000);
         socket.emit(
           "message:send",
-          { conversationId: selectedId, content, clientId },
+          {
+            conversationId: selectedId,
+            clientId,
+            contentType: "text/plain",
+            envelopes,
+          },
           (res) => {
             clearTimeout(timer);
             if (!res.ok) return reject(new Error(res.error));
-            resolve();
+            resolve(res.message);
           },
         );
+      });
+
+      // Inserta optimísticamente con plaintext conocido (no re-ciframos para
+      // verificar; confiamos en que el server persistió lo que enviamos).
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === serverMsg.id)) return prev;
+        return [
+          ...prev,
+          { ...serverMsg, plaintext: content, status: "ok" as const },
+        ];
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "send_failed");
@@ -186,6 +308,7 @@ export default function ChatPage() {
     try {
       await api("/auth/logout", { method: "POST", auth: true });
     } catch {}
+    if (me) clearKeypair(me.device.id);
     clearSession();
     closeSocket();
     router.replace("/login");
@@ -260,7 +383,12 @@ export default function ChatPage() {
         {selectedConv ? (
           <>
             <header className="chat-main-header">
-              <h2>{displayTitle(selectedConv, me.user.id)}</h2>
+              <h2>
+                <span className="lock" title="Cifrado de extremo a extremo">
+                  🔒
+                </span>{" "}
+                {displayTitle(selectedConv, me.user.id)}
+              </h2>
               <p className="muted">
                 {selectedConv.type === "group"
                   ? `${selectedConv.members.length} miembros`
@@ -287,7 +415,21 @@ export default function ChatPage() {
                         {sender?.displayName ?? "?"}
                       </div>
                     )}
-                    <div className="bubble-text">{msg.content}</div>
+                    <div className="bubble-text">
+                      {msg.status === "ok" && msg.plaintext}
+                      {msg.status === "legacy" && (
+                        <>
+                          <span className="warn-inline">📜 sin cifrar</span>{" "}
+                          {msg.plaintext}
+                        </>
+                      )}
+                      {msg.status === "no_envelope" && (
+                        <em>🔒 este dispositivo no puede descifrar este mensaje</em>
+                      )}
+                      {msg.status === "decrypt_error" && (
+                        <em>⚠️ error al descifrar</em>
+                      )}
+                    </div>
                     <div className="bubble-time">
                       {new Date(msg.createdAt).toLocaleTimeString([], {
                         hour: "2-digit",
@@ -303,7 +445,7 @@ export default function ChatPage() {
               <input
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                placeholder="Escribe un mensaje…"
+                placeholder="Escribe un mensaje cifrado…"
                 disabled={sending}
                 autoFocus
               />

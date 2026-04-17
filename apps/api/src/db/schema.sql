@@ -127,12 +127,13 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_conv_created
   ON messages(conversation_id, created_at DESC);
 
--- Un sobre por cada dispositivo destinatario. Cada uno se cifra con la sesión
--- Signal correspondiente (double ratchet).
+-- Un sobre por cada dispositivo destinatario. En Fase 4 se usa crypto_box
+-- de libsodium (X25519 + XSalsa20-Poly1305); ciphertext incluye el MAC.
 CREATE TABLE IF NOT EXISTS message_envelopes (
   message_id       UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   recipient_device UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
   ciphertext       BYTEA NOT NULL,
+  nonce            BYTEA,
   delivered_at     TIMESTAMPTZ,
   PRIMARY KEY (message_id, recipient_device)
 );

@@ -281,6 +281,12 @@ pnpm build
 #   docker exec -i euromex-postgres psql \
 #     -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
 #     < apps/api/src/db/migrations/001-add-message-content.sql
+#
+# Fase 4 (E2EE): añade la columna `nonce` a message_envelopes.
+# source infra/.env && \
+#   docker exec -i euromex-postgres psql \
+#     -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+#     < apps/api/src/db/migrations/002-enable-e2ee.sql
 
 # Para DB nueva no hace falta migración (schema.sql ya trae todo).
 # Si prefieres resetear completamente (¡BORRA DATOS!):

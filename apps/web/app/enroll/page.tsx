@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api, saveSession } from "../lib/api";
+import { ensureDeviceKeypair } from "../lib/keys";
 
 interface BeginResponse {
   enrollmentId: string;
@@ -22,6 +23,14 @@ interface AuthSuccess {
 }
 
 export default function EnrollPage() {
+  return (
+    <Suspense fallback={<main className="shell"><p className="tagline">Cargando…</p></main>}>
+      <EnrollContent />
+    </Suspense>
+  );
+}
+
+function EnrollContent() {
   const router = useRouter();
   const params = useSearchParams();
   const [step, setStep] = useState<"begin" | "complete">("begin");
@@ -84,7 +93,8 @@ export default function EnrollPage() {
         },
       });
       saveSession(res);
-      router.push("/app");
+      await ensureDeviceKeypair(res.device.id);
+      router.push("/app/chat");
     } catch (err) {
       setError(err instanceof Error ? err.message : "error");
     } finally {
