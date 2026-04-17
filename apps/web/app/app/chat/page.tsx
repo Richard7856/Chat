@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type {
+  AttachmentPayload,
   Conversation,
   DeviceKey,
   Message,
   UserListItem,
 } from "@euromex/shared";
+import { ATTACHMENT_CONTENT_TYPE } from "@euromex/shared";
 import {
   decodeUtf8,
   decryptFrom,
@@ -22,6 +24,11 @@ import {
 import { api, clearSession, loadSession } from "../../lib/api";
 import { ensureDeviceKeypair, clearKeypair } from "../../lib/keys";
 import { closeSocket, getSocket } from "../../lib/socket";
+import {
+  downloadFileToUser,
+  encryptAndUpload,
+  formatBytes,
+} from "../../lib/attachments";
 
 interface MeResponse {
   user: {
@@ -43,6 +50,8 @@ interface RenderedMessage extends Message {
   plaintext: string | null;
   /** 'ok' | 'legacy' (texto plano Fase 3) | 'no_envelope' | 'decrypt_error' */
   status: "ok" | "legacy" | "no_envelope" | "decrypt_error";
+  /** Parsed payload cuando contentType === ATTACHMENT_CONTENT_TYPE. */
+  attachment?: AttachmentPayload;
 }
 
 type DeviceKeyMap = Record<string, DeviceKey>;
@@ -58,8 +67,10 @@ export default function ChatPage() {
   const [showNew, setShowNew] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   /** Cache de claves públicas por deviceId (para descifrar mensajes entrantes
    *  y cifrar los salientes). Se refresca al entrar a una conversación. */
@@ -86,7 +97,12 @@ export default function ChatPage() {
         const senderPub = await fromBase64(senderKey.identityPublicKey);
         const env = await envelopeFromBase64(msg.envelope);
         const pt = await decryptFrom(env, senderPub, kp.privateKey);
-        return { ...msg, plaintext: await decodeUtf8(pt), status: "ok" };
+        const text = await decodeUtf8(pt);
+        const attachment =
+          msg.contentType === ATTACHMENT_CONTENT_TYPE
+            ? (JSON.parse(text) as AttachmentPayload)
+            : undefined;
+        return { ...msg, plaintext: text, status: "ok", attachment };
       } catch {
         return { ...msg, plaintext: null, status: "decrypt_error" };
       }
@@ -240,16 +256,21 @@ export default function ChatPage() {
     });
   }, [messages]);
 
-  async function onSend(e: React.FormEvent) {
-    e.preventDefault();
-    if (!selectedId || !draft.trim() || !me || !myKeypair) return;
-    const content = draft.trim();
-    const clientId = crypto.randomUUID();
-    setDraft("");
-    setSending(true);
-    try {
+  /**
+   * Cifra un plaintext (bytes) y lo envía al server. Hace el fan-out por
+   * dispositivo destinatario y la inserción optimista local.
+   */
+  const sendEncrypted = useCallback(
+    async (params: {
+      plaintextBytes: Uint8Array;
+      contentType: string;
+      /** Plaintext que la UI conoce para mostrar sin descifrar. */
+      localPlaintext: string;
+      /** Payload de adjunto ya parseado (si aplica) para render optimista. */
+      attachment?: AttachmentPayload;
+    }): Promise<void> => {
+      if (!selectedId || !myKeypair) throw new Error("no_conversation");
       await refreshDeviceKeys(selectedId);
-      const plaintextBytes = await encodeUtf8(content);
       const recipients = Object.values(deviceKeysRef.current).filter(
         (d) => d.identityPublicKey,
       );
@@ -259,7 +280,11 @@ export default function ChatPage() {
       const envelopes = await Promise.all(
         recipients.map(async (d) => {
           const peerPub = await fromBase64(d.identityPublicKey!);
-          const env = await encryptFor(plaintextBytes, peerPub, myKeypair.privateKey);
+          const env = await encryptFor(
+            params.plaintextBytes,
+            peerPub,
+            myKeypair.privateKey,
+          );
           return {
             recipientDeviceId: d.deviceId,
             ciphertext: await toBase64(env.ciphertext),
@@ -268,15 +293,16 @@ export default function ChatPage() {
         }),
       );
 
+      const clientId = crypto.randomUUID();
       const socket = getSocket();
       const serverMsg = await new Promise<Message>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("timeout")), 10_000);
+        const timer = setTimeout(() => reject(new Error("timeout")), 30_000);
         socket.emit(
           "message:send",
           {
             conversationId: selectedId,
             clientId,
-            contentType: "text/plain",
+            contentType: params.contentType,
             envelopes,
           },
           (res) => {
@@ -287,20 +313,73 @@ export default function ChatPage() {
         );
       });
 
-      // Inserta optimísticamente con plaintext conocido (no re-ciframos para
-      // verificar; confiamos en que el server persistió lo que enviamos).
       setMessages((prev) => {
         if (prev.some((m) => m.id === serverMsg.id)) return prev;
         return [
           ...prev,
-          { ...serverMsg, plaintext: content, status: "ok" as const },
+          {
+            ...serverMsg,
+            plaintext: params.localPlaintext,
+            status: "ok" as const,
+            attachment: params.attachment,
+          },
         ];
+      });
+    },
+    [selectedId, myKeypair, refreshDeviceKeys],
+  );
+
+  async function onSend(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedId || !draft.trim() || !me || !myKeypair) return;
+    const content = draft.trim();
+    setDraft("");
+    setSending(true);
+    try {
+      await sendEncrypted({
+        plaintextBytes: await encodeUtf8(content),
+        contentType: "text/plain",
+        localPlaintext: content,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "send_failed");
       setDraft(content);
     } finally {
       setSending(false);
+    }
+  }
+
+  async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // permite re-seleccionar el mismo archivo luego
+    if (!file || !selectedId || !myKeypair) return;
+
+    setUploading(true);
+    setError(null);
+    try {
+      const upload = await encryptAndUpload(selectedId, file);
+      const payload: AttachmentPayload = {
+        kind: "attachment",
+        attachmentId: upload.attachmentId,
+        fileName: upload.fileName,
+        mime: upload.mime,
+        byteSize: upload.byteSize,
+        fileKey: upload.fileKey,
+        fileIv: upload.fileIv,
+      };
+      const json = JSON.stringify(payload);
+      await sendEncrypted({
+        plaintextBytes: await encodeUtf8(json),
+        contentType: ATTACHMENT_CONTENT_TYPE,
+        localPlaintext: json,
+        attachment: payload,
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error ? `Subida falló: ${err.message}` : "upload_failed",
+      );
+    } finally {
+      setUploading(false);
     }
   }
 
@@ -372,7 +451,9 @@ export default function ChatPage() {
                 )}
               </div>
               <div className="conv-preview">
-                {conv.lastMessage?.content ?? "(sin mensajes)"}
+                {conv.lastMessage
+                  ? (conv.lastMessage.content ?? "🔒 mensaje cifrado")
+                  : "(sin mensajes)"}
               </div>
             </li>
           ))}
@@ -416,7 +497,10 @@ export default function ChatPage() {
                       </div>
                     )}
                     <div className="bubble-text">
-                      {msg.status === "ok" && msg.plaintext}
+                      {msg.status === "ok" && msg.attachment && (
+                        <AttachmentBubble att={msg.attachment} />
+                      )}
+                      {msg.status === "ok" && !msg.attachment && msg.plaintext}
                       {msg.status === "legacy" && (
                         <>
                           <span className="warn-inline">📜 sin cifrar</span>{" "}
@@ -443,13 +527,33 @@ export default function ChatPage() {
 
             <form className="composer" onSubmit={onSend}>
               <input
+                ref={fileInputRef}
+                type="file"
+                onChange={onPickFile}
+                style={{ display: "none" }}
+              />
+              <button
+                type="button"
+                className="attach-btn"
+                title="Adjuntar archivo"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading || sending}
+              >
+                📎
+              </button>
+              <input
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                placeholder="Escribe un mensaje cifrado…"
-                disabled={sending}
+                placeholder={
+                  uploading ? "Cifrando y subiendo…" : "Escribe un mensaje cifrado…"
+                }
+                disabled={sending || uploading}
                 autoFocus
               />
-              <button type="submit" disabled={sending || !draft.trim()}>
+              <button
+                type="submit"
+                disabled={sending || uploading || !draft.trim()}
+              >
                 {sending ? "…" : "Enviar"}
               </button>
             </form>
@@ -480,6 +584,62 @@ function displayTitle(conv: Conversation, meId: string): string {
   if (conv.type === "group") return conv.name ?? "Grupo";
   const other = conv.members.find((m) => m.userId !== meId);
   return other ? other.displayName : "(solo tú)";
+}
+
+function fileIconFor(mime: string): string {
+  if (mime.startsWith("image/")) return "🖼️";
+  if (mime.startsWith("video/")) return "🎬";
+  if (mime.startsWith("audio/")) return "🎵";
+  if (mime === "application/pdf") return "📕";
+  if (mime.includes("spreadsheet") || mime.includes("excel")) return "📊";
+  if (mime.includes("word") || mime.includes("document")) return "📝";
+  if (mime.includes("zip") || mime.includes("compressed")) return "🗜️";
+  return "📎";
+}
+
+function AttachmentBubble({ att }: { att: AttachmentPayload }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function onDownload() {
+    setErr(null);
+    setBusy(true);
+    try {
+      await downloadFileToUser({
+        attachmentId: att.attachmentId,
+        fileKey: att.fileKey,
+        fileIv: att.fileIv,
+        fileName: att.fileName,
+        mime: att.mime,
+      });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "download_failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="attachment">
+      <span className="attachment-icon">{fileIconFor(att.mime)}</span>
+      <div className="attachment-meta">
+        <div className="attachment-name" title={att.fileName}>
+          {att.fileName}
+        </div>
+        <div className="attachment-size">{formatBytes(att.byteSize)}</div>
+      </div>
+      <button
+        type="button"
+        className="attachment-dl"
+        onClick={onDownload}
+        disabled={busy}
+        title="Descargar y descifrar"
+      >
+        {busy ? "…" : "⬇"}
+      </button>
+      {err && <div className="attachment-err">Error: {err}</div>}
+    </div>
+  );
 }
 
 function NewConversationDialog({

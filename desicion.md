@@ -6,31 +6,98 @@
 
 ## Estado actual
 
-- **Fase:** 4 — E2EE (completada)
-- **Paso dentro de la fase:** `packages/crypto` con NaCl (tweetnacl), API
-  acepta envelopes cifrados, web genera + publica identity key en login
-  y enroll, chat cifra y descifra en cliente. Fix de build de Next.js
-  (Suspense en /enroll). Mensajes legados de Fase 3 siguen legibles con
-  badge "📜 sin cifrar".
+- **Fase:** 5 — Adjuntos cifrados E2EE (completada)
+- **Paso dentro de la fase:** backend con endpoint multipart POST +
+  download proxy, almacenamiento filesystem en `/opt/euromex/storage/`,
+  cliente web cifra con AES-256-GCM antes de subir, UI con paperclip y
+  bubble de descarga. El server solo ve ciphertext + tamaño; nombre,
+  MIME y clave viajan dentro del plaintext del mensaje cifrado.
 - **Última actualización:** 2026-04-17
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
+- **Deploy actual:** API v0.5.0 corriendo en el VPS de Hostinger detrás
+  de `tsx` (no `node dist/`) para que los workspace packages se
+  resuelvan. Admin creado, login funcional.
 
 ## Próximos pasos
 
-1. **Usuario:** `git pull` en el VPS y `pnpm build` — debería pasar ya
-   (el error anterior en /enroll está arreglado).
-2. **Usuario:** aplicar la migración `002-enable-e2ee.sql` en la DB
-   existente (añade columna `nonce` a `message_envelopes`). Instrucción
-   exacta en `HOSTINGER.md`.
-3. **Usuario:** smoke test E2EE: dos navegadores con dos usuarios,
-   abrir un DM, enviar mensaje. Verificar en la DB (`SELECT content,
-   ciphertext FROM messages LEFT JOIN message_envelopes ON ...`) que
-   `content` es NULL y `ciphertext` es bytes aleatorios.
-4. Iniciar **Fase 5 — Adjuntos cifrados**: MinIO/S3, cifrado cliente
+1. **Usuario:** en el VPS, `git pull` + `pnpm install` (por
+   `@fastify/multipart`) + crear directorio de storage:
+   `mkdir -p /opt/euromex/storage && chmod 700 /opt/euromex/storage`
+2. **Usuario:** añadir a `apps/api/.env` las dos variables nuevas:
+   `STORAGE_DIR=/opt/euromex/storage` y
+   `MAX_ATTACHMENT_BYTES=52428800`
+3. **Usuario:** aplicar la migración
+   `003-add-attachments.sql` (instrucción en `HOSTINGER.md`). Reiniciar
+   API con `kill $(cat /var/run/euromex-api.pid)` + relanzar con el
+   mismo comando tsx de antes.
+4. **Usuario:** smoke test: sube un PDF o imagen en un DM, descarga del
+   otro lado, verifica que se abre correctamente.
+5. Iniciar **Fase 6 — Mobile React Native (Expo)**: app móvil con
+   reuso de `packages/crypto`, secure storage para claves, push
+   notifications vía FCM/APNs. O saltar a **Fase 7 — HTTPS con
+   Traefik + dominio** si quieres salir a producción antes.
    AES-GCM de archivos, thumbnails locales.
 
 ## Historial de decisiones
+
+### [2026-04-17] Fase 5 — Filesystem local en vez de MinIO/S3
+
+- **Qué se decidió:** los blobs cifrados se guardan en disco del VPS
+  bajo `/opt/euromex/storage/ab/cd/<uuid>.bin` (2 niveles de prefijo
+  para no saturar un inode). No instalamos MinIO ni usamos S3 externo.
+- **Por qué:** <25 usuarios con envíos esporádicos de archivos caben
+  perfecto en disco del VPS. MinIO añade un container, credenciales
+  S3 y complejidad sin beneficio real hasta que escalemos. La API
+  abstrae las ops de storage (`writeBlob/streamBlob/...`) así que en
+  el futuro se cambia el backend sin tocar callers.
+- **Trade-off:** no hay signed URLs para CDN; toda descarga pasa por
+  el API. Para 25 usuarios × archivos ocasionales es irrelevante.
+- **Impacto:** `apps/api/src/storage/files.ts`, var de entorno
+  `STORAGE_DIR`, `HOSTINGER.md`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 5 — Clave AES-256-GCM dentro del plaintext del mensaje
+
+- **Qué se decidió:** cada archivo se cifra con una clave AES-256-GCM
+  recién generada en el cliente. Esa clave + IV + nombre + MIME + tamaño
+  forman un JSON que viaja como plaintext del mensaje que lo referencia.
+  El mensaje completo se cifra con los envelopes NaCl por dispositivo
+  destinatario (mismo pipeline que un mensaje de texto).
+- **Por qué:** reusamos 100% de la infraestructura E2EE de Fase 4. No
+  necesitamos una nueva tabla `attachment_envelopes` ni otro flujo de
+  fan-out. El server recibe bytes cifrados y no sabe ni qué tipo de
+  archivo es — solo tamaño y quién lo subió.
+- **Impacto:** `packages/shared/src/schemas.ts`
+  (`AttachmentPayloadSchema`, `ATTACHMENT_CONTENT_TYPE`),
+  `apps/web/app/lib/attachments.ts`, bubble rendering en chat.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 5 — WebCrypto (AES-GCM) en lugar de NaCl para archivos
+
+- **Qué se decidió:** los archivos se cifran con **AES-256-GCM** vía
+  WebCrypto nativa del navegador, no con `nacl.box`. El mensaje que
+  los referencia sí usa NaCl.
+- **Por qué:** AES-GCM es simétrica (una sola clave) — perfecto para
+  cifrar bytes una vez y que cualquier recipiente con la clave pueda
+  descifrar. NaCl `box` es asimétrica y requiere una operación por
+  destinatario, lo que multiplicaría el tamaño de los archivos. Con
+  AES simétrica ciframos una sola vez y repartimos la clave vía los
+  envelopes NaCl que ya tenemos.
+- **Impacto:** `apps/web/app/lib/attachments.ts`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 5 — Multipart upload sin metadata en el cuerpo
+
+- **Qué se decidió:** el endpoint `POST /conversations/:id/attachments`
+  acepta SOLO el blob (sin filename, mime, ni otros campos). El server
+  solo ve ciphertext y conversación.
+- **Por qué:** si el server conociera el nombre o mime real del
+  archivo, sería una filtración de metadata potente. Lo forzamos a ser
+  opaco: un Content-Type `application/octet-stream` genérico y un nombre
+  fijo "blob.enc". Todo lo descriptivo viaja cifrado en el mensaje.
+- **Impacto:** `apps/api/src/routes/attachments.ts` (limits.fields=0).
+- **Propuesto por:** Claude.
 
 ### [2026-04-17] Fase 4 — NaCl (tweetnacl) en vez de Signal Protocol / libsodium-wrappers
 

@@ -287,15 +287,30 @@ pnpm build
 #   docker exec -i euromex-postgres psql \
 #     -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
 #     < apps/api/src/db/migrations/002-enable-e2ee.sql
+#
+# Fase 5 (adjuntos): crea tabla attachments.
+# source infra/.env && \
+#   docker exec -i euromex-postgres psql \
+#     -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+#     < apps/api/src/db/migrations/003-add-attachments.sql
 
 # Para DB nueva no hace falta migración (schema.sql ya trae todo).
 # Si prefieres resetear completamente (¡BORRA DATOS!):
 # pnpm infra:down && rm -rf infra/volumes/postgres && pnpm infra:up
 
-# Relanza
-nohup node apps/api/dist/server.js > /var/log/euromex-api.log 2>&1 &
+# Fase 5: crea el directorio de storage + añade 2 vars al .env del API.
+# mkdir -p /opt/euromex/storage && chmod 700 /opt/euromex/storage
+# echo 'STORAGE_DIR=/opt/euromex/storage' >> apps/api/.env
+# echo 'MAX_ATTACHMENT_BYTES=52428800' >> apps/api/.env
+
+# Relanza el API con tsx (no node dist/ — los workspace packages exportan
+# .ts directos y Node puro no los resuelve). Esto lo limpiamos en Fase 7.
+cd /opt/euromex/apps/api
+nohup npx tsx src/server.ts > /var/log/euromex-api.log 2>&1 &
 echo $! > /var/run/euromex-api.pid
-cd apps/web
+
+# Relanza la web
+cd /opt/euromex/apps/web
 nohup pnpm start > /var/log/euromex-web.log 2>&1 &
 echo $! > /var/run/euromex-web.pid
 ```

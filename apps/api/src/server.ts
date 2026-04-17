@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
+import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import { config } from "./config.js";
 import { pgPing } from "./db/pg.js";
@@ -10,10 +11,11 @@ import { registerJwt } from "./auth/jwt.js";
 import { authRoutes } from "./routes/auth.js";
 import { invitationRoutes } from "./routes/invitations.js";
 import { conversationRoutes } from "./routes/conversations.js";
+import { attachmentRoutes } from "./routes/attachments.js";
 import { registerSocketIO } from "./chat/socket.js";
 import type { HealthResponse } from "@euromex/shared";
 
-const API_VERSION = "0.3.0";
+const API_VERSION = "0.5.0";
 
 export async function buildServer() {
   const app = Fastify({
@@ -34,6 +36,13 @@ export async function buildServer() {
   });
   await app.register(cookie);
   await app.register(rateLimit, { max: 300, timeWindow: "1 minute" });
+  await app.register(multipart, {
+    limits: {
+      fileSize: config.maxAttachmentBytes,
+      files: 1,
+      fields: 0,
+    },
+  });
   await registerJwt(app);
 
   app.get("/health", async (): Promise<HealthResponse> => {
@@ -53,6 +62,7 @@ export async function buildServer() {
   await app.register(authRoutes);
   await app.register(invitationRoutes);
   await app.register(conversationRoutes);
+  await app.register(attachmentRoutes);
 
   // Socket.IO requiere que el servidor HTTP exista; lo montamos después de
   // app.ready() pero antes de listen(). Fastify crea app.server antes de

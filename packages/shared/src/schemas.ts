@@ -250,6 +250,42 @@ export const DeviceKeySchema = z.object({
 export type DeviceKey = z.infer<typeof DeviceKeySchema>;
 
 // ============================================================================
+// Adjuntos (Fase 5) — archivos cifrados E2EE
+// ============================================================================
+
+/** Content type que identifica un mensaje cuyo plaintext describe un adjunto. */
+export const ATTACHMENT_CONTENT_TYPE =
+  "application/vnd.euromex.attachment+json";
+
+/**
+ * Estructura del plaintext del mensaje cuando es un adjunto. Se serializa
+ * como JSON y se cifra como cualquier otro mensaje de texto. El server
+ * NUNCA ve este JSON — solo el ciphertext del sobre.
+ */
+export const AttachmentPayloadSchema = z.object({
+  kind: z.literal("attachment"),
+  attachmentId: z.string().uuid(),
+  fileName: z.string().min(1).max(260),
+  mime: z.string().min(1).max(100),
+  byteSize: z.number().int().positive(),
+  /** Clave AES-256-GCM en base64 (32 bytes). */
+  fileKey: Base64Schema,
+  /** IV/nonce AES-GCM en base64 (12 bytes). */
+  fileIv: Base64Schema,
+  /** Opcional: texto adicional que acompaña al archivo. */
+  caption: z.string().max(1000).optional(),
+});
+export type AttachmentPayload = z.infer<typeof AttachmentPayloadSchema>;
+
+export const UploadAttachmentResponseSchema = z.object({
+  attachmentId: z.string().uuid(),
+  byteSize: z.number().int().nonnegative(),
+});
+export type UploadAttachmentResponse = z.infer<
+  typeof UploadAttachmentResponseSchema
+>;
+
+// ============================================================================
 // Socket.IO events
 // ============================================================================
 

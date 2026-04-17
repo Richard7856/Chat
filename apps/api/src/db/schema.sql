@@ -143,6 +143,26 @@ CREATE INDEX IF NOT EXISTS idx_envelopes_pending
   WHERE delivered_at IS NULL;
 
 -- ============================================================================
+-- Adjuntos (Fase 5).
+-- El server solo guarda ciphertext en disco + metadatos mínimos. La clave
+-- AES-256-GCM y el nombre/MIME del archivo viven dentro del plaintext del
+-- mensaje que lo referencia — o sea, cifrados por dispositivo. Sin acceso a
+-- los envelopes del mensaje, nadie puede descifrar el archivo aunque tenga
+-- los bytes.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS attachments (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id    UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  uploader_user_id   UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  uploader_device_id UUID NOT NULL REFERENCES devices(id) ON DELETE RESTRICT,
+  storage_key        TEXT NOT NULL UNIQUE,
+  byte_size          BIGINT NOT NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_conv ON attachments(conversation_id);
+
+-- ============================================================================
 -- Auditoría (login, enrollment, revocación, altas/bajas)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS audit_log (

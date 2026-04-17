@@ -461,6 +461,92 @@ button.secondary {
   background: rgba(255, 255, 255, 0.04);
 }
 
+/* Attachments ------------------------------------------------------------- */
+
+.attach-btn {
+  padding: 0.5rem 0.7rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 20px;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.attach-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.attach-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.attachment {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.5rem 0.6rem;
+  margin: -0.15rem -0.25rem;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 8px;
+  min-width: 200px;
+}
+
+.bubble.mine .attachment {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.attachment-icon {
+  font-size: 1.8rem;
+  line-height: 1;
+}
+
+.attachment-meta {
+  min-width: 0;
+}
+
+.attachment-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
+.attachment-size {
+  font-size: 0.8rem;
+  opacity: 0.8;
+  margin-top: 0.15rem;
+}
+
+.attachment-dl {
+  padding: 0.4rem 0.7rem;
+  background: transparent;
+  border: 1px solid currentColor;
+  color: inherit;
+  border-radius: 6px;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.attachment-dl:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.attachment-dl:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.attachment-err {
+  grid-column: 1 / -1;
+  color: #ff6b6b;
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+
 .lock {
   font-size: 0.85rem;
   margin-right: 0.2rem;

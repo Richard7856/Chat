@@ -25,6 +25,10 @@ export const config = {
   jwtTtlSec: Number(optional("JWT_TTL_SEC", String(60 * 60 * 8))),
   /** Orígenes web permitidos (CORS). Lista separada por coma. */
   corsOrigins: optional("CORS_ORIGINS", "http://localhost:3000").split(","),
+  /** Dónde persistir los blobs cifrados de los adjuntos. */
+  storageDir: optional("STORAGE_DIR", "/opt/euromex/storage"),
+  /** Máximo tamaño por archivo subido (bytes). Default 50 MiB. */
+  maxAttachmentBytes: Number(optional("MAX_ATTACHMENT_BYTES", String(50 * 1024 * 1024))),
 } as const;
 
 export type Config = typeof config;
