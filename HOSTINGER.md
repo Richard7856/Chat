@@ -1,8 +1,9 @@
-# Deploy en VPS de Hostinger
+# Deploy en VPS de Hostinger — coexistiendo con n8n + Traefik
 
-Guía paso a paso para poner Euromex Chat en tu VPS de Hostinger **en modo
-staging** (HTTP directo por IP, sin dominio). Cuando tengas dominio listo,
-la Fase 7 del plan añadirá Nginx + HTTPS con Let's Encrypt.
+Guía paso a paso para poner Euromex Chat en tu VPS de Hostinger **sin
+romper tu instalación actual de n8n + Traefik**. Modo staging: HTTP por
+IP y puerto (3100). Cuando quieras HTTPS con dominio, la Fase 7 lo
+enchufa a tu Traefik existente (sin instalar Nginx).
 
 No necesito acceso a tu VPS. Tú ejecutas los comandos por SSH y me cuentas
 si algo falla.
@@ -13,74 +14,73 @@ si algo falla.
 
 ---
 
-## 0. Pre-requisitos del VPS
+## 0. Estado actual del VPS (lo que ya tienes)
 
-Asegúrate en Hostinger (panel hPanel → VPS):
+Detectado en tu VPS:
 
-1. **Sistema operativo:** Ubuntu 22.04 LTS o 24.04 LTS (si es otro, avísame).
-2. **Acceso SSH:** que tengas el usuario root o un sudoer, y la clave SSH
-   o contraseña configurada.
-3. **Firewall:** abre temporalmente los puertos **3000** (web) y **4000**
-   (API). Panel hPanel → VPS → Firewall → añadir reglas TCP entrantes.
-   (En producción cerraremos estos y dejaremos solo 80/443 detrás de
-   Nginx, pero para staging queremos verlos directo.)
+- **Traefik** en 80/443 — reverse proxy con TLS (reusaremos en Fase 7).
+- **n8n** Docker en `127.0.0.1:5678` — intacto.
+- **email-admin** Docker (interno, puerto 3000 dentro de Docker).
+- **Node app** en `/var/www/e...` escuchando en `0.0.0.0:3000` — por eso
+  **no podemos usar el puerto 3000** para nuestra web.
+
+Puertos que **nosotros** vamos a usar:
+
+| Puerto | Servicio | Expuesto a |
+|--------|----------|------------|
+| 3100 | Web Next.js | internet (staging) o solo Traefik (prod) |
+| 4000 | API Fastify | internet (staging) o solo Traefik (prod) |
+| 5432 | Postgres | **solo 127.0.0.1** (nunca a internet) |
+| 6379 | Redis | **solo 127.0.0.1** (nunca a internet) |
+
+Todos libres según tu `ss` y `docker ps`.
 
 ---
 
 ## 1. Conéctate por SSH
 
-Desde tu equipo local:
-
 ```bash
 ssh root@TU_IP_DEL_VPS
 ```
 
-Reemplaza `TU_IP_DEL_VPS` por la IP que Hostinger te dio (aparece en hPanel).
-
 ---
 
-## 2. Instala las dependencias del sistema
+## 2. Instala dependencias del sistema (modo cuidadoso)
 
-Copia y pega este bloque completo. Lo probé para Ubuntu 22.04/24.04.
+**No correremos `apt upgrade -y`** — podría reiniciar Traefik/n8n. Solo
+instalamos lo nuevo que falta.
 
 ```bash
-# Actualiza paquetes
-apt update && apt upgrade -y
+# Solo refresca índice, no actualiza paquetes existentes
+apt update
 
-# Utilidades básicas
-apt install -y curl git ufw build-essential ca-certificates gnupg
-
-# Node.js 22 (vía NodeSource)
+# Node.js 22 (vía NodeSource) — coexiste con cualquier Node previo
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt install -y nodejs
-node --version   # debe imprimir v22.x.x
+node --version   # v22.x.x
 
 # pnpm 10
 npm install -g pnpm@10
-pnpm --version   # debe imprimir 10.x.x
+pnpm --version
 
-# Docker + plugin compose
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-chmod a+r /etc/apt/keyrings/docker.gpg
-. /etc/os-release
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" \
-  > /etc/apt/sources.list.d/docker.list
-apt update
-apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+# Docker y Docker Compose — YA LOS TIENES (n8n/Traefik corren en Docker).
+# Solo verifica versiones:
 docker --version
 docker compose version
-
-# Firewall básico (opcional pero recomendado)
-ufw allow OpenSSH
-ufw allow 3000/tcp
-ufw allow 4000/tcp
-ufw --force enable
 ```
+
+> Si `node --version` muestra una versión distinta a v22, probablemente
+> el proceso en `/var/www/e...` usa otra versión vía `nvm`. Mi instalación
+> pone Node 22 como el global; tu otra app sigue usando el suyo si está
+> pinned por nvm. Si dudas, avísame antes de seguir.
+
+**NO corras `ufw --force enable`.** Tu Traefik ya está aceptando 80/443 y
+UFW podría bloquearlo. Si quieres reglas de firewall, déjalas para Fase 7
+cuando armemos el set completo con Traefik.
 
 ---
 
-## 3. Clona el repo en el VPS
+## 3. Clona el repo
 
 ```bash
 mkdir -p /opt/euromex && cd /opt/euromex
@@ -88,17 +88,16 @@ git clone https://github.com/richard7856/chat.git .
 git checkout claude/private-chat-mac-auth-e9QYn
 ```
 
-Si el repo es privado, configura una SSH key de deploy o usa un Personal
-Access Token en la URL (`https://USER:TOKEN@github.com/...`).
+Si el repo es privado: usa una SSH deploy key o Personal Access Token
+(`https://USER:TOKEN@github.com/...`).
 
 ---
 
-## 4. Genera los secretos y crea los `.env`
+## 4. Genera secretos y crea los `.env`
 
 ```bash
 cd /opt/euromex
 
-# Secretos aleatorios
 JWT_SECRET=$(openssl rand -base64 48)
 MASTER_ENC_KEY=$(openssl rand -base64 32)
 PG_PASS=$(openssl rand -base64 24 | tr -d '=+/' | cut -c1-24)
@@ -112,8 +111,6 @@ echo "REDIS_PASS=$REDIS_PASS"
 
 **⚠️ Copia estos valores a un gestor de contraseñas AHORA.** Si pierdes
 `MASTER_ENC_KEY` pierdes el acceso TOTP de todos los usuarios.
-
-Ahora crea los archivos `.env`:
 
 ```bash
 cat > infra/.env <<EOF
@@ -133,7 +130,7 @@ REDIS_URL=redis://default:$REDIS_PASS@127.0.0.1:6379
 JWT_SECRET=$JWT_SECRET
 JWT_TTL_SEC=28800
 MASTER_ENC_KEY=$MASTER_ENC_KEY
-CORS_ORIGINS=http://TU_IP_DEL_VPS:3000
+CORS_ORIGINS=http://TU_IP_DEL_VPS:3100
 EOF
 
 cat > apps/web/.env.local <<EOF
@@ -150,23 +147,34 @@ EOF
 ```bash
 cd /opt/euromex
 pnpm install
-pnpm rebuild argon2      # compila bindings nativos para tu CPU
-pnpm build               # compila API + web
+pnpm rebuild argon2      # compila bindings nativos
+pnpm build               # API + web
 ```
 
-El `build` tarda 1–2 minutos.
+El `build` tarda 1–2 min.
 
 ---
 
 ## 6. Arranca Postgres + Redis
 
+Los contenedores se llaman `euromex-postgres` y `euromex-redis` — no
+chocan con los nombres de tus contenedores de n8n/Traefik.
+
 ```bash
 cd /opt/euromex
 pnpm infra:up
-docker compose -f infra/docker-compose.yml ps   # ambos "healthy" en ~10s
+docker compose -f infra/docker-compose.yml ps
 ```
 
-El schema SQL se carga automáticamente en el primer arranque.
+Ambos deben aparecer `(healthy)` en ~10s. El schema SQL se carga
+automáticamente en el primer arranque.
+
+```bash
+# Verifica que siguen corriendo tus otros servicios
+docker ps --format '{{.Names}}: {{.Status}}'
+# Deberías ver: root-traefik-1, root-n8n-1, email-admin,
+# euromex-postgres, euromex-redis
+```
 
 ---
 
@@ -180,13 +188,12 @@ ADMIN_USERNAME=richard \
   pnpm run create-admin
 ```
 
-El script imprime un **QR data URL** y un **otpauth URI**. Copia el URI
-(línea que empieza con `otpauth://totp/...`), pégalo en un navegador con
-un generador de QR (o usa una app que acepte URI directamente como Aegis),
-y escanéalo con tu app autenticadora (Google Authenticator, Aegis, 1Password).
+El script imprime un **QR data URL** y un **otpauth URI**. Pega el data
+URL (empieza con `data:image/png;base64,...`) en un navegador para ver
+el QR, o escanea la `otpauth://...` directamente desde Aegis / 1Password.
 
-Guarda también la semilla base32 en tu gestor de contraseñas por si pierdes
-el teléfono.
+Guarda la semilla base32 en tu gestor de contraseñas por si pierdes el
+teléfono.
 
 ---
 
@@ -216,9 +223,17 @@ kill $(cat /var/run/euromex-web.pid)
 
 ---
 
-## 9. Verifica que todo funciona
+## 9. Abre los puertos 3100 y 4000 en Hostinger
 
-Desde tu equipo local (o el navegador):
+En el firewall **externo** de Hostinger (hPanel → VPS → Firewall), abre
+temporalmente TCP **3100** y **4000** entrantes. No uses UFW local
+porque tienes Traefik funcionando.
+
+---
+
+## 10. Verifica que todo funciona
+
+Desde tu equipo local:
 
 ```bash
 curl http://TU_IP_DEL_VPS:4000/health
@@ -229,13 +244,13 @@ Deberías ver:
 {"status":"ok","service":"euromex-api","version":"0.2.0",...,"deps":{"postgres":"up","redis":"up"}}
 ```
 
-Luego abre en el navegador:
-- http://TU_IP_DEL_VPS:3000 — landing
-- http://TU_IP_DEL_VPS:3000/login — inicia sesión con tu usuario admin
-- http://TU_IP_DEL_VPS:3000/app — panel con "Crear código de invitación"
+En el navegador:
+- `http://TU_IP_DEL_VPS:3100` — landing
+- `http://TU_IP_DEL_VPS:3100/login` — inicia sesión con tu admin
+- `http://TU_IP_DEL_VPS:3100/app` — panel con "Crear código de invitación"
 
-Emite un código, compártelo con un compañero, y que entre por
-`/enroll?code=XXXX-XXXX-XXXX-XXXX`.
+Emite un código y pruébalo desde otro navegador en
+`http://TU_IP_DEL_VPS:3100/enroll?code=XXXX-XXXX-XXXX-XXXX`.
 
 ---
 
@@ -246,7 +261,7 @@ Cuando yo pushee cambios a la branch:
 ```bash
 cd /opt/euromex
 
-# Detén servicios
+# Detén servicios nuestros (n8n/Traefik intactos)
 kill $(cat /var/run/euromex-api.pid) 2>/dev/null
 kill $(cat /var/run/euromex-web.pid) 2>/dev/null
 
@@ -255,16 +270,16 @@ git fetch origin
 git checkout claude/private-chat-mac-auth-e9QYn
 git pull
 
-# Reinstala deps y recompila
+# Reinstala y recompila
 pnpm install
 pnpm rebuild argon2
 pnpm build
 
-# Si hay cambios de schema SQL: recrea contenedores
-#   (¡borra la DB local! Solo hazlo en staging)
+# Si hay cambios de schema SQL (te aviso en el commit): recrea DB
+# ¡ESTO BORRA TU DB DE CHAT! Solo en staging o si aún no hay datos.
 # pnpm infra:down && rm -rf infra/volumes/postgres && pnpm infra:up
 
-# Relanza servicios
+# Relanza
 nohup node apps/api/dist/server.js > /var/log/euromex-api.log 2>&1 &
 echo $! > /var/run/euromex-api.pid
 cd apps/web
@@ -276,23 +291,32 @@ echo $! > /var/run/euromex-web.pid
 
 ## Troubleshooting
 
-- **`curl /health` falla:** revisa `tail -f /var/log/euromex-api.log`. Los
-  errores de conexión a DB indican que los `.env` tienen mal la contraseña
-  o que los contenedores no están arriba (`docker compose ps`).
-- **Web no carga:** `tail -f /var/log/euromex-web.log`. Firewall UFW
-  puede estar bloqueando (`ufw status`).
-- **`argon2` falla al iniciar:** ejecuta `pnpm rebuild argon2` dentro del
-  repo.
-- **TOTP inválido al loguear:** verifica que la hora del VPS es correcta
-  (`timedatectl`). `systemctl enable --now systemd-timesyncd` si desfasa.
-- **Olvidé el QR del admin:** corre de nuevo `create-admin` con un usuario
-  nuevo, y elimina el anterior con SQL (`psql` adjunto al contenedor).
+- **Puerto 3100 ocupado:** `ss -tlnp | grep :3100`. Si aparece otro
+  proceso, avísame y te doy otro puerto.
+- **`curl /health` falla:** `tail -f /var/log/euromex-api.log`. Errores
+  de DB = `.env` con password mala o contenedores abajo
+  (`docker compose -f infra/docker-compose.yml ps`).
+- **Web no carga:** `tail -f /var/log/euromex-web.log`. Revisa firewall
+  de Hostinger, no UFW.
+- **`argon2` falla al iniciar:** `pnpm rebuild argon2` dentro del repo.
+- **TOTP inválido al loguear:** verifica hora del VPS (`timedatectl`).
+  `systemctl enable --now systemd-timesyncd` si desfasa.
+- **n8n dejó de responder:** no debería — nuestros contenedores son
+  independientes. Si pasa, `docker restart root-n8n-1` y avísame; lo
+  investigamos.
 
-## Qué falta (Fase 7, cuando tengas dominio)
+---
 
-- Apuntar dominio Euromex al VPS (A record → IP).
-- Nginx como reverse proxy en 443 con HSTS y CSP.
-- Let's Encrypt (certbot) para HTTPS automático.
-- `systemd` units para API y web.
-- Backups programados de `infra/volumes/postgres`.
-- Monitoreo (uptime-kuma o Grafana Loki).
+## Fase 7 (pendiente): Traefik + HTTPS con dominio
+
+Cuando tengas un (sub)dominio Euromex listo (ej. `chat.euromex.com.mx`):
+
+1. Apuntar DNS al VPS.
+2. Añadir nuestras apps a la red Docker de Traefik.
+3. Poner `labels` Traefik en `infra/docker-compose.yml` para que Traefik
+   las enrute con Let's Encrypt automático.
+4. Convertir `nohup` a `systemd` units.
+5. Backups cifrados a S3/B2 y monitoreo con uptime-kuma.
+
+Como ya tienes Traefik + TLS funcionando con n8n, en Fase 7 lo
+enchufamos ahí en vez de instalar Nginx. Más simple, menos piezas.

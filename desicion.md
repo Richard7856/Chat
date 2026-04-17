@@ -27,6 +27,30 @@
 
 ## Historial de decisiones
 
+### [2026-04-17] Coexistencia con n8n + Traefik en el mismo VPS
+
+- **Qué se decidió:**
+  - Web Next.js cambia del puerto **3000 → 3100** porque el VPS ya tiene
+    un Node app nativo en 3000 (`/var/www/e...`, presumiblemente el
+    frontend de `email-admin`).
+  - NO correr `apt upgrade -y` ni `ufw --force enable` en el VPS: hay
+    Traefik en 80/443 y contenedores n8n corriendo. UFW mal puesto los
+    dejaría sin conectividad.
+  - Fase 7 usará **Traefik existente** como reverse proxy (labels en
+    docker-compose) en vez de instalar Nginx aparte. Menos piezas.
+- **Por qué:** no romper la infra productiva del usuario. Minimizar el
+  área de cambios al VPS.
+- **Impacto:**
+  - `apps/web/package.json` — scripts `dev` / `start` usan `-p 3100`.
+  - `apps/api/.env.example` — `CORS_ORIGINS` ahora apunta a `:3100`.
+  - `README.md` — referencia el nuevo puerto.
+  - `HOSTINGER.md` — reescrita como guía "coexistencia": sin `apt upgrade`,
+    sin `ufw enable`, instrucciones para abrir 3100/4000 en firewall
+    externo de Hostinger, sección final apuntando a integración con
+    Traefik en Fase 7.
+- **Propuesto por:** Claude después de que el usuario reportara
+  `ss -tlnp` y `docker ps` del VPS.
+
 ### [2026-04-17] Fase 2 — Flujo de enrollment en 2 pasos con JWT efímero
 
 - **Qué se decidió:** el enrollment usa dos endpoints (`/auth/enroll/begin`

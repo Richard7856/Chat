@@ -45,7 +45,7 @@ pnpm dev
 ```
 
 - API: http://localhost:4000/health
-- Web: http://localhost:3000
+- Web: http://localhost:3100
 
 ## Scripts útiles
 
