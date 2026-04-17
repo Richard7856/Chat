@@ -19,6 +19,12 @@ export const config = {
   logLevel: optional("API_LOG_LEVEL", "info"),
   databaseUrl: required("DATABASE_URL"),
   redisUrl: required("REDIS_URL"),
+  jwtSecret: required("JWT_SECRET"),
+  masterEncKey: required("MASTER_ENC_KEY"),
+  /** TTL del access token. 8h es razonable: corto pero no molesta al usuario. */
+  jwtTtlSec: Number(optional("JWT_TTL_SEC", String(60 * 60 * 8))),
+  /** Orígenes web permitidos (CORS). Lista separada por coma. */
+  corsOrigins: optional("CORS_ORIGINS", "http://localhost:3000").split(","),
 } as const;
 
 export type Config = typeof config;

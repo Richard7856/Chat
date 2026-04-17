@@ -42,17 +42,21 @@ CREATE INDEX IF NOT EXISTS idx_invitations_active
 
 -- ============================================================================
 -- Dispositivos (enrollment por usuario; solo dispositivos aprobados hablan)
+-- Los campos Signal (identity_public_key, signed_prekey_*) son NULL hasta
+-- Fase 4, cuando se integre libsignal. En Fase 2 el dispositivo se
+-- registra con solo user_agent/platform/device_name.
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS devices (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id               UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   device_name           TEXT NOT NULL,
   platform              TEXT NOT NULL CHECK (platform IN ('web','ios','android','desktop')),
-  registration_id       INTEGER NOT NULL,
-  identity_public_key   BYTEA NOT NULL,
-  signed_prekey_id      INTEGER NOT NULL,
-  signed_prekey_public  BYTEA NOT NULL,
-  signed_prekey_sig     BYTEA NOT NULL,
+  user_agent            TEXT,
+  registration_id       INTEGER,
+  identity_public_key   BYTEA,
+  signed_prekey_id      INTEGER,
+  signed_prekey_public  BYTEA,
+  signed_prekey_sig     BYTEA,
   status                TEXT NOT NULL DEFAULT 'pending'
                         CHECK (status IN ('pending','active','revoked')),
   approved_by_device_id UUID REFERENCES devices(id) ON DELETE SET NULL,

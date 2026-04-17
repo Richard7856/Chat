@@ -6,24 +6,105 @@
 
 ## Estado actual
 
-- **Fase:** 1 — Fundación (scaffolding del monorepo e infra local)
-- **Paso dentro de la fase:** completado el esqueleto; pendiente instalar
-  dependencias y correr smoke test con `pnpm dev`
+- **Fase:** 2 — Auth + enrollment (completada)
+- **Paso dentro de la fase:** endpoints listos, web con /login y /enroll,
+  script `create-admin`, guía `HOSTINGER.md`. Pendiente: que el usuario
+  despliegue en el VPS de Hostinger y valide el flujo end-to-end.
 - **Última actualización:** 2026-04-17
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
 
 ## Próximos pasos
 
-1. `pnpm install` en la raíz, luego `pnpm typecheck` para verificar que todo
-   compila contra las versiones reales de las dependencias.
-2. Levantar `pnpm infra:up` y verificar que `/health` devuelve
-   `deps: { postgres: "up", redis: "up" }`.
-3. Iniciar **Fase 2 — Auth + enrollment**: invitaciones, Argon2id, TOTP, JWT
-   de sesión, flujo de primer dispositivo, admin mínimo para emitir
-   invitaciones. Añadir Drizzle ORM y migraciones en este paso.
+1. **Usuario:** seguir `HOSTINGER.md` para desplegar en el VPS.
+2. **Usuario:** crear admin con `pnpm --filter @euromex/api run create-admin`,
+   escanear QR en app autenticadora, verificar login.
+3. **Usuario:** emitir una invitación y probar `/enroll` desde otro
+   navegador.
+4. Iniciar **Fase 3 — Mensajería en claro**: Socket.IO, rooms,
+   persistencia, 1-a-1 y grupos, UI de chat. (Sin E2EE todavía; Fase 4
+   lo añade con libsignal).
 
 ## Historial de decisiones
+
+### [2026-04-17] Fase 2 — Flujo de enrollment en 2 pasos con JWT efímero
+
+- **Qué se decidió:** el enrollment usa dos endpoints (`/auth/enroll/begin`
+  y `/auth/enroll/complete`). El begin valida la invitación, crea el
+  secreto TOTP y devuelve al cliente un `enrollmentId` (JWT firmado, 10
+  min TTL, contiene todos los datos temporales incl. el secret TOTP).
+  El complete verifica el token TOTP contra el secret del JWT y persiste
+  user + device + consume la invitación.
+- **Por qué:** evita estado server-side (sin tabla de "pending enrollments",
+  sin Redis). El JWT es stateless, corto, firmado — no puede ser
+  manipulado. El secret TOTP en el JWT es seguro porque el cliente ya lo
+  tiene (para el QR) y el JWT viaja por HTTPS; la alternativa sería
+  guardarlo en Redis con TTL, más piezas móviles para poco beneficio.
+- **Impacto:** `apps/api/src/routes/auth.ts`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 2 — Secretos TOTP cifrados con AES-256-GCM + master key
+
+- **Qué se decidió:** los secretos TOTP se guardan en DB cifrados con
+  AES-256-GCM usando una clave maestra de 32 bytes (env `MASTER_ENC_KEY`).
+  Formato: `nonce(12) || ciphertext || tag(16)` en una columna `BYTEA`.
+- **Por qué:** si la DB se filtra, los TOTP no quedan expuestos. La clave
+  maestra vive solo en memoria del proceso API (variable de entorno) y
+  nunca toca disco del contenedor de DB. Estándar auditable.
+- **Impacto:** `apps/api/src/auth/crypto.ts`, columna `users.totp_secret_enc`.
+- **Advertencia:** perder `MASTER_ENC_KEY` = perder el 2FA de todos los
+  usuarios. Anotado en `HOSTINGER.md`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 2 — Un device por login; re-uso real llega en Fase 4
+
+- **Qué se decidió:** cada login crea un registro nuevo en `devices`. No
+  re-usamos dispositivos existentes basándonos en fingerprint todavía.
+- **Por qué:** el re-uso de device requiere algún mecanismo de identidad
+  persistente del cliente (cookie segura, device key, etc.). Eso encaja
+  mejor cuando integremos libsignal en Fase 4 (cada dispositivo tiene un
+  identity keypair persistente). Por ahora el trade-off es simplicidad
+  vs. una tabla `devices` que crece con cada login — aceptable con <25
+  usuarios. El admin puede revocar cualquier device desde la DB.
+- **Impacto:** `apps/api/src/routes/auth.ts` (login endpoint).
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 2 — Columnas Signal en `devices` pasan a nullable
+
+- **Qué se decidió:** `registration_id`, `identity_public_key`,
+  `signed_prekey_*` ahora son `NULL` hasta que el dispositivo complete
+  enrollment Signal (Fase 4). Se añadió `user_agent` para ayudar a
+  identificar dispositivos en la UI.
+- **Por qué:** Fase 2 registra dispositivos funcionales (platform,
+  device_name, user_agent) sin aún tener crypto E2EE. Forzar NOT NULL
+  nos obligaría a llenar con placeholders y después migrar.
+- **Impacto:** `apps/api/src/db/schema.sql`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 2 — Admin bootstrap vía script CLI (no endpoint)
+
+- **Qué se decidió:** el primer admin se crea con
+  `pnpm --filter @euromex/api run create-admin` leyendo credenciales de
+  env. No hay endpoint HTTP para esto.
+- **Por qué:** un endpoint "solo si no hay admin" suena útil pero abre
+  una ventana de exposición en cada redeploy (raza). Un script local
+  que requiere acceso SSH ya gated por el mismo nivel de seguridad que
+  tener acceso root al VPS. Simple, auditable, idempotente.
+- **Impacto:** `apps/api/src/scripts/create-admin.ts`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 2 — Deploy staging por IP sin dominio todavía
+
+- **Qué se decidió:** la primera puesta en marcha en el VPS de Hostinger
+  se hace en HTTP directo por IP, puertos 3000 (web) y 4000 (API),
+  sin Nginx ni TLS. HTTPS con Let's Encrypt llega en Fase 7.
+- **Por qué:** desbloquea prueba end-to-end del usuario sin esperar a
+  comprar/apuntar un dominio. El usuario no pidió dominio aún.
+- **Riesgo aceptado:** el tráfico viaja en claro durante staging; los
+  secretos TOTP y passwords estarían expuestos a un atacante en la red.
+  Mitigación: no meter datos reales hasta Fase 7.
+- **Impacto:** `HOSTINGER.md`.
+- **Propuesto por:** Claude, con disclaimer al usuario.
 
 ### [2026-04-17] Chat privado custom en lugar de Telegram / WhatsApp Business
 
@@ -109,6 +190,54 @@
 - **Propuesto por:** usuario.
 
 ## Cambios por versión
+
+### v0.2.0 — 2026-04-17 — Auth + enrollment (Fase 2)
+
+- **Agregado:**
+  - `apps/api/src/auth/crypto.ts`: Argon2id para passwords e invitaciones,
+    AES-256-GCM para secretos TOTP, generador de códigos de invitación
+    base32 (formato `XXXX-XXXX-XXXX-XXXX`).
+  - `apps/api/src/auth/totp.ts`: creación de secretos TOTP, generación
+    de QR data URL con `qrcode`, verificación con ventana ±1 periodo.
+  - `apps/api/src/auth/jwt.ts`: registro de `@fastify/jwt`, middlewares
+    `requireAuth` (valida token + consulta DB para user/device activos)
+    y `requireAdmin`.
+  - `apps/api/src/routes/auth.ts`: endpoints
+    `POST /auth/enroll/begin`, `POST /auth/enroll/complete`,
+    `POST /auth/login`, `GET /auth/me`, `POST /auth/logout`.
+  - `apps/api/src/routes/invitations.ts`: `POST /auth/invitations`
+    (solo admin).
+  - `apps/api/src/scripts/create-admin.ts`: script CLI para bootstrap
+    del primer admin.
+  - `packages/shared/src/schemas.ts`: Zod schemas para auth
+    (usuarios, passwords, TOTP, invitaciones, login, me).
+  - `apps/web/app/lib/api.ts`: helper fetch con sesión en localStorage.
+  - `apps/web/app/login/page.tsx`: formulario usuario + password + TOTP.
+  - `apps/web/app/enroll/page.tsx`: flujo de 2 pasos con QR inline.
+  - `apps/web/app/app/page.tsx`: landing post-login + panel admin
+    mínimo para emitir invitaciones.
+  - `HOSTINGER.md`: guía end-to-end de deploy en VPS (SSH + Docker +
+    Node + pnpm + primer admin + smoke test + upgrade path).
+- **Modificado:**
+  - `apps/api/src/db/schema.sql`: columnas Signal de `devices` nullable;
+    añadida `user_agent`.
+  - `apps/api/src/config.ts`: añade `jwtSecret`, `masterEncKey`,
+    `jwtTtlSec`, `corsOrigins`.
+  - `apps/api/src/server.ts`: registra `@fastify/cookie`, CORS con
+    origins de env, JWT plugin, rutas de auth e invitaciones.
+  - `apps/api/.env.example`: nuevas variables de entorno obligatorias.
+  - `apps/api/package.json`: nuevas deps (argon2, otpauth, qrcode,
+    @fastify/jwt, @fastify/cookie); script `create-admin`.
+  - `apps/web/app/page.tsx` + `globals.css`: landing con links a
+    /login y /enroll, estilos de formularios.
+  - `package.json`: `pnpm.onlyBuiltDependencies = ["argon2"]`.
+- **Removido:** n/a.
+- **Decisiones referenciadas:** las 6 entradas de Fase 2 (enrollment en
+  2 pasos, AES-GCM para TOTP, un device por login, Signal nullable,
+  admin por CLI, staging por IP).
+- **Verificación:** `pnpm -r run typecheck` pasa en los 3 paquetes. El
+  smoke test end-to-end (infra up + create-admin + enroll + login) se
+  ejecuta en el VPS siguiendo `HOSTINGER.md`.
 
 ### v0.1.0 — 2026-04-17 — Fundación (Fase 1)
 

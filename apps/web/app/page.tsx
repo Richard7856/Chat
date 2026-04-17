@@ -7,17 +7,21 @@ export default function HomePage() {
       </header>
 
       <section className="status">
-        <h2>Estado del proyecto</h2>
+        <h2>Acceso</h2>
         <p>
-          Fase 1 — Fundación. Monorepo inicializado, infraestructura local
-          lista (Postgres + Redis), API con healthcheck, web shell desplegado.
-          Las siguientes fases añaden autenticación por invitación, enrollment
-          de dispositivos y mensajería E2EE.
+          Este chat es solo para miembros autorizados de Grupo Euromex. Para
+          entrar necesitas:
         </p>
-        <p>
-          Para el estado detallado y decisiones técnicas consulta{" "}
-          <code>desicion.md</code> en la raíz del repo.
-        </p>
+        <ul>
+          <li>
+            <strong>Cuenta ya creada:</strong>{" "}
+            <a href="/login">iniciar sesión</a>
+          </li>
+          <li>
+            <strong>Código de invitación del admin:</strong>{" "}
+            <a href="/enroll">crear cuenta</a>
+          </li>
+        </ul>
       </section>
     </main>
   );

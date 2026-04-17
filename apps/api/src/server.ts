@@ -1,13 +1,17 @@
 import Fastify from "fastify";
+import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import { config } from "./config.js";
 import { pgPing } from "./db/pg.js";
 import { redisPing } from "./db/redis.js";
+import { registerJwt } from "./auth/jwt.js";
+import { authRoutes } from "./routes/auth.js";
+import { invitationRoutes } from "./routes/invitations.js";
 import type { HealthResponse } from "@euromex/shared";
 
-const API_VERSION = "0.1.0";
+const API_VERSION = "0.2.0";
 
 export async function buildServer() {
   const app = Fastify({
@@ -22,8 +26,13 @@ export async function buildServer() {
   });
 
   await app.register(helmet, { global: true });
-  await app.register(cors, { origin: false });
+  await app.register(cors, {
+    origin: config.corsOrigins,
+    credentials: true,
+  });
+  await app.register(cookie);
   await app.register(rateLimit, { max: 300, timeWindow: "1 minute" });
+  await registerJwt(app);
 
   app.get("/health", async (): Promise<HealthResponse> => {
     const [postgres, redis] = await Promise.all([pgPing(), redisPing()]);
@@ -38,6 +47,9 @@ export async function buildServer() {
       },
     };
   });
+
+  await app.register(authRoutes);
+  await app.register(invitationRoutes);
 
   return app;
 }

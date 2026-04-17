@@ -24,5 +24,10 @@
     "turbo": "^2.3.3",
     "typescript": "^5.6.3",
     "@types/node": "^22.9.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "argon2"
+    ]
   }
 }
