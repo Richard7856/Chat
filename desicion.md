@@ -6,26 +6,95 @@
 
 ## Estado actual
 
-- **Fase:** 2 — Auth + enrollment (completada)
-- **Paso dentro de la fase:** endpoints listos, web con /login y /enroll,
-  script `create-admin`, guía `HOSTINGER.md`. Pendiente: que el usuario
-  despliegue en el VPS de Hostinger y valide el flujo end-to-end.
+- **Fase:** 3 — Mensajería en claro (completada)
+- **Paso dentro de la fase:** API con Socket.IO + REST de conversaciones,
+  UI web de chat con sidebar + burbujas + modal de nueva conversación,
+  esquema SQL actualizado con migración delta. El usuario está
+  configurando el VPS en paralelo.
 - **Última actualización:** 2026-04-17
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
 
 ## Próximos pasos
 
-1. **Usuario:** seguir `HOSTINGER.md` para desplegar en el VPS.
-2. **Usuario:** crear admin con `pnpm --filter @euromex/api run create-admin`,
-   escanear QR en app autenticadora, verificar login.
-3. **Usuario:** emitir una invitación y probar `/enroll` desde otro
-   navegador.
-4. Iniciar **Fase 3 — Mensajería en claro**: Socket.IO, rooms,
-   persistencia, 1-a-1 y grupos, UI de chat. (Sin E2EE todavía; Fase 4
-   lo añade con libsignal).
+1. **Usuario:** terminar deploy en el VPS siguiendo `HOSTINGER.md`.
+   Confirmar: `/health` OK, login admin, emitir invitación, probar
+   enrollment desde otro navegador, enviar y recibir mensajes en
+   tiempo real entre dos usuarios.
+2. **Si la DB ya existe con datos de Fase 2:** aplicar la migración
+   `apps/api/src/db/migrations/001-add-message-content.sql` (añade
+   columna `content` a `messages`).
+3. Iniciar **Fase 4 — E2EE con Signal Protocol**: `packages/crypto`
+   con wrappers de `@signalapp/libsignal-client`, key bundles por
+   dispositivo, migración de `messages.content` plaintext a
+   `message_envelopes` ciphertext, safety numbers en UI.
 
 ## Historial de decisiones
+
+### [2026-04-17] Fase 3 — Socket.IO integrado al servidor Fastify
+
+- **Qué se decidió:** Socket.IO adjunto al servidor HTTP subyacente de
+  Fastify (`app.server`), path `/socket.io`. Autenticación vía JWT en
+  `handshake.auth.token`, verificación contra DB al conectar (user +
+  device activos). Auto-join a rooms `conv:<id>` al conectarse para
+  recibir mensajes sin handshake explícito, más `user:<id>` para
+  notificaciones de tipo "conversación nueva".
+- **Por qué:** Fastify no tiene WebSocket nativo tan cómodo. Socket.IO
+  trae rooms, reconexión automática, fallback a long-polling y una API
+  uniforme client/server. Adjuntarlo directamente al `http.Server`
+  evita complejidad de plugins. La auto-join al conectar hace que la
+  UI no tenga que orquestar joins por cada conversación — con <25
+  usuarios el costo de "N rooms per socket" es trivial.
+- **Impacto:** `apps/api/src/chat/socket.ts`,
+  `apps/api/src/server.ts`, `packages/shared/src/schemas.ts`
+  (`ServerToClientEvents`, `ClientToServerEvents`),
+  `apps/web/app/lib/socket.ts`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 3 — Texto plano en `messages.content` (no envelopes)
+
+- **Qué se decidió:** en Fase 3 los mensajes se almacenan como texto
+  plano en una columna nueva `messages.content TEXT` (nullable). La
+  tabla `message_envelopes` queda vacía hasta Fase 4. Schema actualizado
+  + migración delta `001-add-message-content.sql` para DBs ya
+  desplegadas de Fase 2.
+- **Por qué:** validamos UX, latencia y fan-out rápido sin mezclar el
+  diseño con el Double Ratchet de Signal. En Fase 4 se migra: `content`
+  pasa a NULL, se generan envelopes por dispositivo destinatario. La
+  migración será aditiva (no se pierden mensajes viejos; el cliente
+  muestra los de Fase 3 tal cual y los nuevos cifrados).
+- **Riesgo aceptado:** durante Fase 3, un atacante con acceso a la DB
+  puede leer mensajes. Disclaimer documentado para staging por IP.
+- **Impacto:** `apps/api/src/db/schema.sql`,
+  `apps/api/src/db/migrations/001-add-message-content.sql`,
+  `apps/api/src/chat/repo.ts`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 3 — DM único entre pares (re-uso, no duplicados)
+
+- **Qué se decidió:** al crear un DM, si ya existe uno entre los mismos
+  dos usuarios, se devuelve el existente en vez de crear otro. Los
+  grupos sí permiten duplicados por nombre (cada creación es un grupo
+  distinto).
+- **Por qué:** comportamiento esperado en chats de productividad
+  (Slack/Teams). Evita tener múltiples hilos paralelos con la misma
+  persona que fragmenten historial.
+- **Impacto:** `apps/api/src/chat/repo.ts` (`findDmBetween`),
+  `apps/api/src/routes/conversations.ts` (POST /conversations).
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 3 — Single-page chat en `/app/chat` con query-state
+
+- **Qué se decidió:** un único client component en `/app/chat/page.tsx`
+  que maneja sidebar + pane de mensajes + modal de nueva conversación
+  vía `useState`. No se usan rutas `/app/chat/[id]` separadas.
+- **Por qué:** el estado (socket conectado, lista de conversaciones,
+  mensajes cacheados) vive mejor en un solo árbol de React. Con rutas
+  por conversación habría que orquestar el socket globalmente
+  (context/provider). <25 usuarios: no vale la pena. Si crece, se
+  migra a rutas + layout compartido.
+- **Impacto:** `apps/web/app/app/chat/page.tsx`.
+- **Propuesto por:** Claude.
 
 ### [2026-04-17] Coexistencia con n8n + Traefik en el mismo VPS
 
@@ -214,6 +283,49 @@
 - **Propuesto por:** usuario.
 
 ## Cambios por versión
+
+### v0.3.0 — 2026-04-17 — Mensajería en claro (Fase 3)
+
+- **Agregado:**
+  - `apps/api/src/chat/repo.ts`: queries de conversaciones, miembros,
+    mensajes, búsqueda de DM existente, listado de usuarios, marca de
+    lectura.
+  - `apps/api/src/chat/socket.ts`: servidor Socket.IO con auth JWT,
+    rooms por conversación y por usuario, handlers `message:send`,
+    `conversation:join/leave`, `typing:set`; helpers
+    `broadcastMessage` y `broadcastConversationUpdated`.
+  - `apps/api/src/routes/conversations.ts`: endpoints REST
+    `GET /users`, `GET/POST /conversations`, `GET /conversations/:id`,
+    `GET/POST /conversations/:id/messages`, `POST /conversations/:id/read`.
+  - `apps/api/src/db/migrations/001-add-message-content.sql`: migración
+    delta para DBs ya en uso.
+  - `packages/shared/src/schemas.ts`: schemas `UserListItem`,
+    `Conversation`, `ConversationMember`, `Message`,
+    `CreateConversationRequest`, `SendMessageRequest` y los tipos de
+    eventos `ServerToClientEvents` / `ClientToServerEvents`.
+  - `apps/web/app/lib/socket.ts`: cliente Socket.IO tipado, reconecta
+    con el JWT de sesión.
+  - `apps/web/app/app/chat/page.tsx`: UI completa de chat (sidebar de
+    conversaciones, burbujas con sender/hora, composer con envío por
+    WebSocket, modal "Nueva conversación" DM/grupo, badges de unread,
+    auto-scroll, marca de lectura al entrar).
+- **Modificado:**
+  - `apps/api/src/db/schema.sql`: `messages.content TEXT` añadido
+    (nullable para futura coexistencia con envelopes en Fase 4).
+  - `apps/api/src/server.ts`: registra `conversationRoutes` y
+    `registerSocketIO`; bump a v0.3.0.
+  - `apps/api/package.json`: nueva dep `socket.io`.
+  - `apps/web/package.json`: nueva dep `socket.io-client`.
+  - `apps/web/app/app/page.tsx`: CTA "Abrir chat" hacia `/app/chat`.
+  - `apps/web/app/globals.css`: layout grid del chat, burbujas,
+    composer, modal.
+- **Removido:** n/a.
+- **Decisiones referenciadas:** Socket.IO sobre Fastify, texto plano
+  en Fase 3, DM único, single-page chat.
+- **Verificación:** `pnpm -r run typecheck` pasa en los 3 paquetes.
+  Smoke test end-to-end pendiente en el VPS: abrir 2 navegadores, login
+  con dos usuarios distintos, crear DM, enviar mensajes, verificar
+  entrega en tiempo real y badge de unread.
 
 ### v0.2.0 — 2026-04-17 — Auth + enrollment (Fase 2)
 

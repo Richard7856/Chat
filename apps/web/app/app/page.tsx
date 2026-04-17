@@ -103,9 +103,13 @@ export default function AppHome() {
       <section className="status">
         <h2>Mensajería</h2>
         <p>
-          Aún en construcción. La mensajería 1-a-1 y grupos llegan en Fase 3
-          (Socket.IO), y el cifrado E2EE con Signal Protocol en Fase 4. Ver{" "}
-          <code>desicion.md</code>.
+          Mensajería en tiempo real disponible (Fase 3 — texto plano sobre
+          WebSockets). El cifrado E2EE con Signal Protocol llega en Fase 4.
+        </p>
+        <p>
+          <a href="/app/chat" className="cta">
+            Abrir chat →
+          </a>
         </p>
       </section>
     </main>

@@ -126,3 +126,112 @@ export const MeResponseSchema = z.object({
   }),
 });
 export type MeResponse = z.infer<typeof MeResponseSchema>;
+
+// ============================================================================
+// Chat schemas (Fase 3 — texto plano; Fase 4 añade E2EE)
+// ============================================================================
+
+export const UserListItemSchema = z.object({
+  id: z.string().uuid(),
+  username: UsernameSchema,
+  displayName: z.string(),
+  role: UserRoleSchema,
+});
+export type UserListItem = z.infer<typeof UserListItemSchema>;
+
+export const ConversationMemberSchema = z.object({
+  userId: z.string().uuid(),
+  username: UsernameSchema,
+  displayName: z.string(),
+  role: z.enum(["member", "admin"]),
+  joinedAt: z.string().datetime(),
+});
+export type ConversationMember = z.infer<typeof ConversationMemberSchema>;
+
+export const ConversationSchema = z.object({
+  id: z.string().uuid(),
+  type: ConversationTypeSchema,
+  name: z.string().nullable(),
+  description: z.string().nullable(),
+  createdBy: z.string().uuid(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  members: z.array(ConversationMemberSchema),
+  lastMessage: z
+    .object({
+      id: z.string().uuid(),
+      senderUserId: z.string().uuid(),
+      content: z.string().nullable(),
+      createdAt: z.string().datetime(),
+    })
+    .nullable(),
+  unreadCount: z.number().int().nonnegative(),
+});
+export type Conversation = z.infer<typeof ConversationSchema>;
+
+export const CreateConversationRequestSchema = z
+  .object({
+    type: ConversationTypeSchema,
+    memberUserIds: z.array(z.string().uuid()).min(1).max(50),
+    name: z.string().min(1).max(80).optional(),
+    description: z.string().max(500).optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.type === "group" && !v.name) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "los grupos requieren un nombre",
+        path: ["name"],
+      });
+    }
+    if (v.type === "dm" && v.memberUserIds.length !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "un DM requiere exactamente 1 contraparte",
+        path: ["memberUserIds"],
+      });
+    }
+  });
+export type CreateConversationRequest = z.infer<
+  typeof CreateConversationRequestSchema
+>;
+
+export const MessageSchema = z.object({
+  id: z.string().uuid(),
+  conversationId: z.string().uuid(),
+  senderUserId: z.string().uuid(),
+  senderDeviceId: z.string().uuid(),
+  content: z.string().nullable(),
+  contentType: z.string(),
+  createdAt: z.string().datetime(),
+});
+export type Message = z.infer<typeof MessageSchema>;
+
+export const SendMessageRequestSchema = z.object({
+  content: z.string().min(1).max(4000),
+  contentType: z.string().default("text/plain"),
+  /** ID generado en cliente para dedupe + optimistic UI. */
+  clientId: z.string().uuid(),
+});
+export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>;
+
+// ============================================================================
+// Socket.IO events
+// ============================================================================
+
+export interface ServerToClientEvents {
+  "message:new": (msg: Message) => void;
+  "conversation:updated": (conv: Conversation) => void;
+  "typing:update": (p: { conversationId: string; userId: string; typing: boolean }) => void;
+  error: (p: { code: string; message?: string }) => void;
+}
+
+export interface ClientToServerEvents {
+  "conversation:join": (conversationId: string, ack?: (ok: boolean) => void) => void;
+  "conversation:leave": (conversationId: string) => void;
+  "message:send": (
+    p: { conversationId: string; content: string; clientId: string },
+    ack?: (res: { ok: true; message: Message } | { ok: false; error: string }) => void,
+  ) => void;
+  "typing:set": (p: { conversationId: string; typing: boolean }) => void;
+}

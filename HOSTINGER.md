@@ -275,8 +275,15 @@ pnpm install
 pnpm rebuild argon2
 pnpm build
 
-# Si hay cambios de schema SQL (te aviso en el commit): recrea DB
-# ¡ESTO BORRA TU DB DE CHAT! Solo en staging o si aún no hay datos.
+# Si te aviso en el commit que hay migración SQL, aplícala.
+# Ejemplo Fase 3 (solo si tu DB ya existía desde Fase 2):
+# source infra/.env && \
+#   docker exec -i euromex-postgres psql \
+#     -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+#     < apps/api/src/db/migrations/001-add-message-content.sql
+
+# Para DB nueva no hace falta migración (schema.sql ya trae todo).
+# Si prefieres resetear completamente (¡BORRA DATOS!):
 # pnpm infra:down && rm -rf infra/volumes/postgres && pnpm infra:up
 
 # Relanza

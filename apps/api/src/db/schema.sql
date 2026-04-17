@@ -109,13 +109,17 @@ CREATE TABLE IF NOT EXISTS conversation_members (
 CREATE INDEX IF NOT EXISTS idx_conv_members_user ON conversation_members(user_id);
 
 -- ============================================================================
--- Mensajes (ciphertext por dispositivo destinatario — fan-out lado servidor)
+-- Mensajes.
+-- Fase 3: `content` contiene el texto plano (sin E2EE).
+-- Fase 4: `content` pasa a NULL para mensajes cifrados; el payload vive en
+--        message_envelopes (un ciphertext por dispositivo destinatario).
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS messages (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
   sender_user_id  UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   sender_device_id UUID NOT NULL REFERENCES devices(id) ON DELETE RESTRICT,
+  content         TEXT,
   content_type    TEXT NOT NULL DEFAULT 'text/plain',
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
