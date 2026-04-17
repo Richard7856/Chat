@@ -6,12 +6,13 @@
 
 ## Estado actual
 
-- **Fase:** 5 — Adjuntos cifrados E2EE (completada)
-- **Paso dentro de la fase:** backend con endpoint multipart POST +
-  download proxy, almacenamiento filesystem en `/opt/euromex/storage/`,
-  cliente web cifra con AES-256-GCM antes de subir, UI con paperclip y
-  bubble de descarga. El server solo ve ciphertext + tamaño; nombre,
-  MIME y clave viajan dentro del plaintext del mensaje cifrado.
+- **Fase:** 6 — PWA móvil (completada, pivot desde native Expo)
+- **Paso dentro de la fase:** manifest dinámico, iconos generados con
+  ImageResponse (192x192 + 180x180 Apple), service worker con cache
+  estrategia consciente de E2EE, InstallPrompt UI con soporte
+  Chrome/Android + guía manual iOS, chat responsive para móvil con
+  botón atrás, meta tags apple-mobile-web-app. Respeta safe-area para
+  notch/isla.
 - **Última actualización:** 2026-04-17
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
@@ -21,25 +22,81 @@
 
 ## Próximos pasos
 
-1. **Usuario:** en el VPS, `git pull` + `pnpm install` (por
-   `@fastify/multipart`) + crear directorio de storage:
-   `mkdir -p /opt/euromex/storage && chmod 700 /opt/euromex/storage`
-2. **Usuario:** añadir a `apps/api/.env` las dos variables nuevas:
-   `STORAGE_DIR=/opt/euromex/storage` y
-   `MAX_ATTACHMENT_BYTES=52428800`
-3. **Usuario:** aplicar la migración
-   `003-add-attachments.sql` (instrucción en `HOSTINGER.md`). Reiniciar
-   API con `kill $(cat /var/run/euromex-api.pid)` + relanzar con el
-   mismo comando tsx de antes.
-4. **Usuario:** smoke test: sube un PDF o imagen en un DM, descarga del
-   otro lado, verifica que se abre correctamente.
-5. Iniciar **Fase 6 — Mobile React Native (Expo)**: app móvil con
-   reuso de `packages/crypto`, secure storage para claves, push
-   notifications vía FCM/APNs. O saltar a **Fase 7 — HTTPS con
-   Traefik + dominio** si quieres salir a producción antes.
-   AES-GCM de archivos, thumbnails locales.
+1. **Usuario:** `git pull` en el VPS y rebuild de la web:
+   `cd apps/web && pnpm build` (ya compila con fix de `extensionAlias`).
+   Matar y relanzar `euromex-web`.
+2. **Usuario:** probar PWA en móvil:
+   - Chrome/Android: el banner "Instalar" aparece automáticamente.
+   - Safari iOS: Compartir ⬆ → "Añadir a pantalla de inicio".
+3. **Limitación HTTP actual:** los service workers solo se registran
+   en HTTPS (o localhost). Con IP http staging, la app es instalable
+   y usable pero sin cache offline ni push. Se activa todo al pasar a
+   HTTPS en Fase 7.
+4. Iniciar **Fase 7 — Producción**: apuntar subdominio al VPS,
+   integrar nuestras apps al Traefik existente (Docker labels),
+   Let's Encrypt automático, systemd units, backups cifrados, script
+   de rotación de logs. Esta fase cierra el proyecto y lo deja listo
+   para usuarios reales.
 
 ## Historial de decisiones
+
+### [2026-04-17] Fase 6 — PWA en lugar de React Native Expo
+
+- **Qué se decidió:** convertir la web Next.js en PWA instalable en
+  iOS/Android vía "Añadir a pantalla de inicio", en vez de construir
+  una app React Native separada.
+- **Por qué:**
+  - Grupo Euromex tiene <25 usuarios internos — distribución via App
+    Store / Play Store es burocracia innecesaria (reviews, cuentas
+    de developer, cert signing).
+  - Mantener 2 clientes (web + RN) duplica esfuerzo de UI, bugs y
+    actualizaciones.
+  - La crypto E2EE en RN requiere polyfills (WebCrypto no existe
+    nativo) — añadiría fricción.
+  - PWA se actualiza automáticamente al pushear código: sin "update
+    pending in store" que retrasa fixes.
+  - UX moderna de PWA en iOS 16.4+ y Android es prácticamente
+    indistinguible de nativa (standalone, home icon, splash screen).
+- **Trade-offs aceptados:**
+  - Push notifications requieren iOS 16.4+ (aceptable).
+  - No hay distribución por tiendas — los usuarios instalan con un
+    link + "Añadir a pantalla de inicio". Para una empresa chica es
+    suficiente y se puede documentar en 2 líneas.
+- **Impacto:** `apps/web/app/manifest.ts`, `icon.tsx`, `apple-icon.tsx`,
+  `public/sw.js`, `public/offline.html`, `components/pwa-register.tsx`,
+  `components/install-prompt.tsx`, layout metadata, CSS responsive.
+  No se creó `apps/mobile/`.
+- **Propuesto por:** Claude, aprobado por el usuario.
+
+### [2026-04-17] Fase 6 — Service Worker con cache consciente de E2EE
+
+- **Qué se decidió:** el SW solo cachea assets estáticos de Next
+  (`/_next/static/`) cache-first y páginas HTML network-first. API
+  (puerto 4000, cross-origin) nunca entra al SW. Socket.IO también
+  excluido explícitamente.
+- **Por qué:** aunque los mensajes viajan como ciphertext, la mezcla
+  de cache del SW + sesiones auth mutables es un anti-patrón. Las
+  respuestas del API siempre frescas. Los estáticos sí se cachean
+  porque son contenido público post-build.
+- **Impacto:** `apps/web/public/sw.js`.
+- **Propuesto por:** Claude.
+
+### [2026-04-17] Fase 6 — extensionAlias en webpack para imports .js
+
+- **Qué se decidió:** `next.config.mjs` configura
+  `resolve.extensionAlias = { '.js': ['.ts', '.tsx', '.js', '.jsx'] }`
+  para que webpack resuelva los imports estilo NodeNext de los
+  paquetes workspace (donde `from "./foo.js"` apunta al fuente .ts).
+- **Por qué:** tsc con `moduleResolution: "NodeNext"` requiere
+  extensiones `.js` explícitas en imports TS. Webpack por defecto no
+  hace esa sustitución. Sin esto, la web no compila (rompió al
+  introducir la importación de `AttachmentPayload` desde `@euromex/shared`
+  en Fase 5).
+- **Alternativa considerada:** cambiar shared a `moduleResolution:
+  "Bundler"`. Rechazada porque perderíamos verificación estricta de
+  imports en el resto del monorepo.
+- **Impacto:** `apps/web/next.config.mjs`.
+- **Propuesto por:** Claude.
 
 ### [2026-04-17] Fase 5 — Filesystem local en vez de MinIO/S3
 

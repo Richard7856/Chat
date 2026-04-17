@@ -411,7 +411,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="chat-root">
+    <div className="chat-root" data-view={selectedId ? "detail" : "list"}>
       <aside className="chat-sidebar">
         <header className="chat-sidebar-header">
           <div>
@@ -465,6 +465,14 @@ export default function ChatPage() {
           <>
             <header className="chat-main-header">
               <h2>
+                <button
+                  type="button"
+                  className="back-btn"
+                  onClick={() => setSelectedId(null)}
+                  aria-label="Volver"
+                >
+                  ←
+                </button>
                 <span className="lock" title="Cifrado de extremo a extremo">
                   🔒
                 </span>{" "}

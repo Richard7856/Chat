@@ -547,6 +547,114 @@ button.secondary {
   margin-top: 0.25rem;
 }
 
+/* Mobile back button en header del chat --------------------------------- */
+.back-btn {
+  display: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.35rem 0.6rem;
+  border-radius: 8px;
+  font-size: 1.1rem;
+  cursor: pointer;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+
+/* Banner PWA de instalación --------------------------------------------- */
+
+.pwa-banner {
+  position: fixed;
+  left: 1rem;
+  right: 1rem;
+  bottom: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+  z-index: 50;
+  max-width: 560px;
+  margin: 0 auto;
+  font-size: 0.9rem;
+}
+
+.pwa-banner-msg {
+  flex: 1;
+  line-height: 1.4;
+}
+
+.pwa-banner-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.pwa-install-btn {
+  padding: 0.45rem 0.8rem;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pwa-dismiss-btn {
+  padding: 0.4rem 0.6rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+/* Responsive ------------------------------------------------------------ */
+
+@media (max-width: 768px) {
+  .chat-root {
+    grid-template-columns: 1fr;
+  }
+  .chat-root[data-view="detail"] .chat-sidebar {
+    display: none;
+  }
+  .chat-root[data-view="list"] .chat-main {
+    display: none;
+  }
+  .back-btn {
+    display: inline-block;
+  }
+  .bubble {
+    max-width: 85%;
+  }
+  .attachment-name {
+    max-width: 160px;
+  }
+  .shell {
+    padding: 2rem 1rem;
+  }
+  .pwa-banner {
+    font-size: 0.85rem;
+  }
+  .attach-btn {
+    padding: 0.5rem 0.6rem;
+  }
+}
+
+/* Altura segura iOS: respeta notch/isla */
+@supports (padding: max(0px)) {
+  .chat-main-header {
+    padding-top: max(1rem, env(safe-area-inset-top));
+  }
+  .composer {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+}
+
 .lock {
   font-size: 0.85rem;
   margin-right: 0.2rem;

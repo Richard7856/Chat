@@ -293,6 +293,13 @@ pnpm build
 #   docker exec -i euromex-postgres psql \
 #     -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
 #     < apps/api/src/db/migrations/003-add-attachments.sql
+#
+# Fase 6 (PWA): sin migración. Solo rebuild de la web:
+# cd apps/web && pnpm build
+# El resultado incluye /manifest.webmanifest, /icon, /apple-icon.
+# El service worker se registrará automáticamente — pero ojo, los
+# browsers solo activan SW en HTTPS. En HTTP por IP la app es
+# instalable pero sin offline ni push (eso llega con Fase 7).
 
 # Para DB nueva no hace falta migración (schema.sql ya trae todo).
 # Si prefieres resetear completamente (¡BORRA DATOS!):
