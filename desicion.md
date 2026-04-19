@@ -6,7 +6,12 @@
 
 ## Estado actual
 
-- **Fase:** 7 — Producción (completada, cierra el proyecto)
+- **Fase:** 7 — Producción **desplegada y operacional** en el VPS
+- **URL pública:** `https://chat.148-230-82-52.sslip.io` (HTTPS con cert LE)
+- **API:** `https://api.chat.148-230-82-52.sslip.io` (socket.io + REST)
+- **systemd:** `euromex-api` + `euromex-web` activos, auto-restart habilitado
+- **Backups:** timer diario activo, primer backup manual ejecutado OK
+- **Paso final:** 7 — Producción (completada, cierra el proyecto)
 - **Paso dentro de la fase:** template de Traefik dinámico con TLS
   + HSTS + CSP + rate limit, unidades systemd para API/web con
   auto-restart, script de backup diario cifrado con GPG AES-256 +
@@ -47,6 +52,55 @@
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-04-19] Fase 7 — Deploy real: sslip.io + socat proxies + ruta absoluta en systemd
+
+- **Qué se decidió:** cutover a producción usando **sslip.io** como dominio
+  temporal (`chat.148-230-82-52.sslip.io`, `api.chat.148-230-82-52.sslip.io`)
+  mientras se espera autorización para mover `chat.grupoeuromex.com`. Hostinger
+  DNS no publicaba los A records en la zona autoritativa — incluso después
+  de 24+ hrs el SOA serial no incrementaba.
+- **Por qué sslip.io:** servicio DNS wildcard público, gratuito, estable. El
+  IP viene embebido en el hostname (`148-230-82-52.sslip.io → 148.230.82.52`)
+  y resuelve instantáneamente. Let's Encrypt emite certs sin problema
+  (miles de proyectos lo usan).
+- **Impacto:** env vars (`CORS_ORIGINS`, `NEXT_PUBLIC_API_BASE`), archivos
+  cliente rebuild. Migrable a `chat.grupoeuromex.com` con 3 sed + 1 rebuild
+  cuando DNS esté sano.
+
+### [2026-04-19] Fase 7 — Traefik vía Docker labels con proxies socat
+
+- **Qué se decidió:** en vez de file provider, usar el Docker provider
+  existente con dos micro-contenedores `alpine/socat` que actúan de puente
+  entre Traefik (red `root_default`) y nuestros Node en el host (port 3100
+  y 4000). Cada proxy pesa <5 MB, solo forwarda TCP.
+- **Por qué:** el Traefik existente en este VPS se levantó con
+  `--providers.docker=true` solo — sin file provider. Enablarlo requería
+  modificar su docker-compose.yml (propiedad del usuario) y reiniciarlo
+  (downtime para n8n). El patrón socat-proxy es zero-touch sobre Traefik,
+  cero riesgo a n8n.
+- **Impacto:** `infra/traefik-proxies/docker-compose.yml` (creado en el VPS,
+  no en repo para no exponer dominio en git). Labels:
+  `traefik.http.routers.euromex-{web,api}.tls.certresolver=mytlschallenge`.
+- **certResolver:** `mytlschallenge` (nombre custom que ya usaba n8n), no
+  el standard `letsencrypt`.
+
+### [2026-04-19] Fase 7 — Binario absoluto en systemd (lección pnpm workspaces)
+
+- **Qué se decidió:** `ExecStart` apunta directamente al binario en
+  `apps/{api,web}/node_modules/.bin/` con ruta absoluta, NO a
+  `/opt/euromex/node_modules/.bin/` (que no existe con pnpm workspaces)
+  NI a `pnpm start` (requiere pnpm en PATH de systemd, frágil).
+- **Por qué:** pnpm workspaces NO hoistea los binarios a la raíz del monorepo
+  como hace npm. Cada workspace tiene su `node_modules/.bin/` propio. Los
+  binarios (`next`, `tsx`) traen shebang `#!/usr/bin/env node` — ejecutables
+  directos. Esto es más robusto que depender del PATH de systemd.
+- **Gotcha relacionado:** `install-systemd.sh` ahora mata los procesos
+  `nohup` previos antes de habilitar las units, para evitar EADDRINUSE cuando
+  systemd intenta bindar al mismo puerto. Sin este kill, systemd entra en
+  loop `activating (auto-restart)` infinito.
+- **Impacto:** `infra/systemd/euromex-{api,web}.service`,
+  `infra/scripts/install-systemd.sh`.
 
 ### [2026-04-17] Fase 7 — Traefik con file provider (no Docker labels)
 

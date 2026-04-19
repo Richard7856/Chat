@@ -14,8 +14,10 @@ WorkingDirectory=/opt/euromex/apps/api
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/euromex/node_modules/.bin:/opt/euromex/apps/api/node_modules/.bin"
 
 # Arranca con tsx (resuelve .ts directamente — los paquetes workspace
-# exportan fuentes TS). Migrar a `node dist/` requiere builds de shared+crypto.
-ExecStart=/usr/bin/env tsx src/server.ts
+# exportan fuentes TS). Ruta absoluta al binario porque con pnpm workspaces
+# tsx vive en apps/api/node_modules/.bin, NO en la raíz del monorepo.
+# Migrar a `node dist/` requiere builds de shared+crypto.
+ExecStart=/opt/euromex/apps/api/node_modules/.bin/tsx src/server.ts
 
 Restart=on-failure
 RestartSec=5

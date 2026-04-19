@@ -34,6 +34,14 @@ install -m 644 "$SRC/euromex-backup.timer"   "$DST/euromex-backup.timer"
 echo "[install] daemon-reload"
 systemctl daemon-reload
 
+# Si ya había procesos corriendo con nohup, mátalos para evitar EADDRINUSE
+# cuando systemd intente bindar los mismos puertos.
+echo "[install] Matando procesos nohup previos (si existen) para liberar puertos"
+pkill -9 -f '/opt/euromex/apps/api/src/server.ts' 2>/dev/null || true
+pkill -9 -f '/opt/euromex/apps/web/node_modules/.bin/next' 2>/dev/null || true
+pkill -9 -f 'next-server' 2>/dev/null || true
+sleep 2
+
 echo "[install] Habilitando + arrancando euromex-api, euromex-web"
 systemctl enable --now euromex-api.service
 systemctl enable --now euromex-web.service

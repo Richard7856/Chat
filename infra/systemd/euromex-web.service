@@ -12,10 +12,11 @@ WorkingDirectory=/opt/euromex/apps/web
 Environment="NODE_ENV=production"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/euromex/node_modules/.bin"
 
-# `pnpm start` invoca `next start -p 3100`. Necesitamos pnpm global o usar
-# next directamente. Usamos next via node_modules para evitar dependencia
-# de pnpm en PATH.
-ExecStart=/usr/bin/env node /opt/euromex/node_modules/.bin/next start -p 3100
+# Ruta absoluta al binario next en apps/web/node_modules/.bin. Con pnpm
+# workspaces cada paquete tiene su propio .bin — NO se hoistean a la raíz
+# del monorepo. El binario tiene shebang `#!/usr/bin/env node` así que
+# ejecutarlo directo funciona.
+ExecStart=/opt/euromex/apps/web/node_modules/.bin/next start -p 3100
 
 Restart=on-failure
 RestartSec=5
