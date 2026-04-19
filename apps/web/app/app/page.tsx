@@ -20,11 +20,6 @@ interface MeResponse {
   };
 }
 
-interface CreatedInvitation {
-  code: string;
-  expiresAt: string;
-}
-
 export default function AppHome() {
   const router = useRouter();
   const [me, setMe] = useState<MeResponse | null>(null);
@@ -98,13 +93,11 @@ export default function AppHome() {
         </p>
       </section>
 
-      {me.user.role === "admin" && <AdminPanel />}
-
       <section className="status">
         <h2>Mensajería</h2>
         <p>
-          Mensajería en tiempo real disponible (Fase 3 — texto plano sobre
-          WebSockets). El cifrado E2EE con Signal Protocol llega en Fase 4.
+          Chat cifrado de extremo a extremo, con adjuntos y avisos de
+          seguridad.
         </p>
         <p>
           <a href="/app/chat" className="cta">
@@ -112,61 +105,20 @@ export default function AppHome() {
           </a>
         </p>
       </section>
-    </main>
-  );
-}
 
-function AdminPanel() {
-  const [created, setCreated] = useState<CreatedInvitation | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [intendedFor, setIntendedFor] = useState("");
-
-  async function createInvitation() {
-    setErr(null);
-    setBusy(true);
-    try {
-      const res = await api<CreatedInvitation>("/auth/invitations", {
-        auth: true,
-        body: {
-          intendedFor: intendedFor || undefined,
-          role: "user",
-          ttlHours: 24,
-        },
-      });
-      setCreated(res);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="status">
-      <h2>Panel admin</h2>
-      <p>Emite una invitación para dar de alta a un miembro del equipo.</p>
-      <label className="inline">
-        <span>Para (etiqueta):</span>
-        <input
-          value={intendedFor}
-          onChange={(e) => setIntendedFor(e.target.value)}
-          placeholder="p. ej. contabilidad-maria"
-        />
-      </label>
-      <button type="button" onClick={createInvitation} disabled={busy}>
-        {busy ? "Creando..." : "Crear código de invitación"}
-      </button>
-      {err && <p className="error">Error: {err}</p>}
-      {created && (
-        <div className="invite-card">
-          <p>Código (válido una sola vez, expira el {new Date(created.expiresAt).toLocaleString()}):</p>
-          <code className="code-big">{created.code}</code>
-          <p className="hint">
-            Link directo: <code>/enroll?code={created.code}</code>
+      {me.user.role === "admin" && (
+        <section className="status">
+          <h2>Panel admin</h2>
+          <p>
+            Gestiona usuarios, invitaciones y revisa el audit log del sistema.
           </p>
-        </div>
+          <p>
+            <a href="/app/admin" className="cta">
+              Abrir panel admin →
+            </a>
+          </p>
+        </section>
       )}
-    </section>
+    </main>
   );
 }

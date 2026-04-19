@@ -115,12 +115,18 @@ sudo systemctl start euromex-backup.service
 
 ## Estado actual
 
-- **Fase:** 7 — Producción **desplegada y operacional** en el VPS ✅
-- **Proyecto:** cerrado. Todas las 7 fases del plan completadas.
+- **Fase:** 9 — Panel admin web (usuarios, invitaciones, audit log) ✅
+- **Estado:** producción corriendo + features post-plan en expansión
+  continua (Fase 8.1 avisos de seguridad, 8.2 super admin, 9 panel admin).
 - **Última actualización:** 2026-04-19
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
-- **Commit HEAD:** `3c61939 fix(systemd): paths absolutos para binarios de pnpm workspaces`
+- **Fases futuras sugeridas (no obligatorias):**
+  - 10: organigrama + campos de perfil extendido (job_title, department,
+    manager_user_id).
+  - 11: SSO / integración con herramientas externas (dashboard financiero,
+    Bitwarden, etc.) vía JWT firmados.
+  - 12: edición de perfil completo desde admin UI (email, displayName).
 
 ### Producción actual (VPS Hostinger, 148.230.82.52)
 
@@ -179,6 +185,47 @@ pide:
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-04-19] Fase 9 — Panel admin web (usuarios, invitaciones, audit)
+
+- **Qué se decidió:** página `/app/admin` con 3 pestañas (Usuarios,
+  Invitaciones, Audit log). Cualquier admin puede gestionar a otros
+  usuarios, pero con 2 guardas duros:
+  - **No puedes modificar tu propio rol/status** (UI disabled + se
+    mitiga en el server por el invariante de "último admin").
+  - **El sistema nunca permite quedar con 0 admins activos.** La
+    mutación es rechazada en DB layer con error `last_active_admin`.
+- **Por qué cualquier admin puede (no root-admin único):** en una empresa
+  chica es más operativo que varios puedan emitir invitaciones / revocar
+  devices. Todo cambio se registra en `audit_log` con el actor, así que
+  sigue habiendo trazabilidad forense.
+- **UI:** edición inline en la tabla de usuarios (dropdown de rol,
+  checkbox de alertas, dropdown de status). Para mutaciones raras
+  (email, displayName) quedará un modal futuro; de momento solo via SQL.
+- **Impacto:**
+  - `packages/shared/src/schemas.ts`: `AdminUserListItem`,
+    `AdminUserUpdateRequest`, `AdminDeviceItem`, `AdminInvitationItem`,
+    `AdminAuditLogItem`, `UserStatus`.
+  - `apps/api/src/admin/repo.ts`: nuevo módulo con todas las queries.
+  - `apps/api/src/routes/admin.ts`: 7 endpoints gated con
+    `requireAuth + requireAdmin`. Cada mutación registra `admin.*` en
+    `audit_log`.
+  - `apps/api/src/server.ts`: registra `adminRoutes`.
+  - `apps/web/app/app/admin/page.tsx`: página con 3 tabs, edición inline.
+  - `apps/web/app/app/page.tsx`: simplificado — link a `/app/admin` en
+    vez del panel inline viejo. Menos duplicación.
+  - `apps/web/app/globals.css`: estilos de `admin-*`.
+- **Convención nueva:** todas las mutaciones admin se loguean con action
+  prefijada `admin.*` (ej `admin.user.update`, `admin.device.revoke`,
+  `admin.invitation.revoke`). Facilita el filtrado en el audit browser.
+- **Side effect útil:** cuando se deshabilita un usuario (status =
+  'disabled'), se revocan automáticamente todos sus dispositivos
+  activos — cierra sesiones abiertas instantáneamente.
+- **Qué NO entró (fases futuras):**
+  - Edición de perfil completo (displayName, email) via UI — solo SQL.
+  - Organigrama / campos de perfil extendido (job_title, department,
+    manager_user_id) — Fase 10.
+  - SSO / integración con otras herramientas — Fase 11 (TBD).
 
 ### [2026-04-19] Fase 8.2 — Super admin: alertas solo para watchers
 

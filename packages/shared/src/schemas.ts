@@ -342,6 +342,84 @@ export type AttachmentDownloadedNotify = z.infer<
 >;
 
 // ============================================================================
+// Admin panel (Fase 9) — endpoints solo accesibles con requireAdmin
+// ============================================================================
+
+export const UserStatusSchema = z.enum(["active", "disabled"]);
+export type UserStatus = z.infer<typeof UserStatusSchema>;
+
+export const AdminUserListItemSchema = z.object({
+  id: z.string().uuid(),
+  username: UsernameSchema,
+  displayName: z.string(),
+  email: z.string().email().nullable(),
+  role: UserRoleSchema,
+  receivesSecurityAlerts: z.boolean(),
+  status: UserStatusSchema,
+  activeDevicesCount: z.number().int().nonnegative(),
+  lastSeenAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+});
+export type AdminUserListItem = z.infer<typeof AdminUserListItemSchema>;
+
+export const AdminUserUpdateRequestSchema = z
+  .object({
+    role: UserRoleSchema.optional(),
+    receivesSecurityAlerts: z.boolean().optional(),
+    displayName: z.string().min(1).max(64).optional(),
+    email: z.string().email().nullable().optional(),
+    status: UserStatusSchema.optional(),
+  })
+  .refine(
+    (v) =>
+      v.role !== undefined ||
+      v.receivesSecurityAlerts !== undefined ||
+      v.displayName !== undefined ||
+      v.email !== undefined ||
+      v.status !== undefined,
+    { message: "al menos un campo debe cambiar" },
+  );
+export type AdminUserUpdateRequest = z.infer<
+  typeof AdminUserUpdateRequestSchema
+>;
+
+export const AdminDeviceItemSchema = z.object({
+  id: z.string().uuid(),
+  deviceName: z.string(),
+  platform: DevicePlatformSchema,
+  status: DeviceStatusSchema,
+  userAgent: z.string().nullable(),
+  lastSeenAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+  revokedAt: z.string().datetime().nullable(),
+});
+export type AdminDeviceItem = z.infer<typeof AdminDeviceItemSchema>;
+
+export const AdminInvitationItemSchema = z.object({
+  id: z.string().uuid(),
+  intendedFor: z.string().nullable(),
+  role: UserRoleSchema,
+  expiresAt: z.string().datetime(),
+  usedAt: z.string().datetime().nullable(),
+  usedByUsername: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  createdByUsername: z.string(),
+});
+export type AdminInvitationItem = z.infer<typeof AdminInvitationItemSchema>;
+
+export const AdminAuditLogItemSchema = z.object({
+  id: z.number().int(),
+  userId: z.string().uuid().nullable(),
+  username: z.string().nullable(),
+  action: z.string(),
+  metadata: z.record(z.unknown()),
+  ip: z.string().nullable(),
+  userAgent: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});
+export type AdminAuditLogItem = z.infer<typeof AdminAuditLogItemSchema>;
+
+// ============================================================================
 // Socket.IO events
 // ============================================================================
 

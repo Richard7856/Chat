@@ -8,6 +8,7 @@ import { config } from "./config.js";
 import { pgPing } from "./db/pg.js";
 import { redisPing } from "./db/redis.js";
 import { registerJwt } from "./auth/jwt.js";
+import { adminRoutes } from "./routes/admin.js";
 import { authRoutes } from "./routes/auth.js";
 import { invitationRoutes } from "./routes/invitations.js";
 import { conversationRoutes } from "./routes/conversations.js";
@@ -63,6 +64,7 @@ export async function buildServer() {
   await app.register(invitationRoutes);
   await app.register(conversationRoutes);
   await app.register(attachmentRoutes);
+  await app.register(adminRoutes);
 
   // Socket.IO requiere que el servidor HTTP exista; lo montamos después de
   // app.ready() pero antes de listen(). Fastify crea app.server antes de

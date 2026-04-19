@@ -645,6 +645,170 @@ button.secondary {
   }
 }
 
+/* Admin panel ----------------------------------------------------------- */
+
+.admin-shell {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+.admin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1.5rem;
+}
+
+.admin-header h1 {
+  margin: 0 0 0.25rem;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.admin-tabs button {
+  padding: 0.45rem 0.9rem;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.admin-tabs button.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.admin-back {
+  margin-left: 0.5rem;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.admin-back:hover {
+  color: var(--text);
+}
+
+.admin-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.admin-form-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.admin-form-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.admin-form-row input[type="text"],
+.admin-form-row input[type="number"],
+.admin-form-row input:not([type]),
+.admin-form-row select {
+  padding: 0.5rem 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.admin-table-wrap {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.admin-table thead th {
+  background: rgba(255, 255, 255, 0.03);
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  position: sticky;
+  top: 0;
+}
+
+.admin-table td.center,
+.admin-table th.center {
+  text-align: center;
+}
+
+.admin-table tr.saving {
+  opacity: 0.5;
+}
+
+.admin-table select,
+.admin-table input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.admin-table select {
+  padding: 0.3rem 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.admin-table select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.audit-table code {
+  font-size: 0.78rem;
+}
+
+.audit-meta {
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Mobile back button en header del chat --------------------------------- */
 .back-btn {
   display: none;
