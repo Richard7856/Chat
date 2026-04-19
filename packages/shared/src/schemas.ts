@@ -286,6 +286,46 @@ export type UploadAttachmentResponse = z.infer<
 >;
 
 // ============================================================================
+// System events (avisos de seguridad visibles en el chat)
+// ============================================================================
+
+/**
+ * Content type de mensajes de sistema (avisos de eventos: descargas, etc.).
+ * A diferencia de los mensajes normales, NO son E2EE — son audit events
+ * que el server sí conoce y broadcasta. Se almacenan con `content` en
+ * plaintext (el JSON del evento) y `envelope` siempre null.
+ *
+ * Convención del proyecto: visibles a TODOS los miembros de la conversación
+ * (transparencia > privacidad individual en contexto corporativo).
+ */
+export const SYSTEM_CONTENT_TYPE = "application/vnd.euromex.system+json";
+
+export const SystemEventSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("attachment_downloaded"),
+    actor: z.object({
+      userId: z.string().uuid(),
+      username: z.string(),
+      displayName: z.string(),
+    }),
+    target: z.object({
+      attachmentId: z.string().uuid(),
+      fileName: z.string(),
+      byteSize: z.number().int().nonnegative(),
+    }),
+  }),
+]);
+export type SystemEvent = z.infer<typeof SystemEventSchema>;
+
+export const AttachmentDownloadedNotifySchema = z.object({
+  fileName: z.string().min(1).max(260),
+  byteSize: z.number().int().nonnegative(),
+});
+export type AttachmentDownloadedNotify = z.infer<
+  typeof AttachmentDownloadedNotifySchema
+>;
+
+// ============================================================================
 // Socket.IO events
 // ============================================================================
 

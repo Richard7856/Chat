@@ -7,9 +7,10 @@ import type {
   Conversation,
   DeviceKey,
   Message,
+  SystemEvent,
   UserListItem,
 } from "@euromex/shared";
-import { ATTACHMENT_CONTENT_TYPE } from "@euromex/shared";
+import { ATTACHMENT_CONTENT_TYPE, SYSTEM_CONTENT_TYPE } from "@euromex/shared";
 import {
   decodeUtf8,
   decryptFrom,
@@ -29,6 +30,8 @@ import {
   encryptAndUpload,
   formatBytes,
 } from "../../lib/attachments";
+import { SecurityBanner } from "../../components/security-banner";
+import { Watermark } from "../../components/watermark";
 
 interface MeResponse {
   user: {
@@ -48,10 +51,15 @@ interface MeResponse {
 
 interface RenderedMessage extends Message {
   plaintext: string | null;
-  /** 'ok' | 'legacy' (texto plano Fase 3) | 'no_envelope' | 'decrypt_error' */
-  status: "ok" | "legacy" | "no_envelope" | "decrypt_error";
+  /**
+   * 'ok' | 'legacy' (texto plano Fase 3) | 'no_envelope' | 'decrypt_error'
+   * | 'system' (aviso de evento, no-E2EE, visible a todos)
+   */
+  status: "ok" | "legacy" | "no_envelope" | "decrypt_error" | "system";
   /** Parsed payload cuando contentType === ATTACHMENT_CONTENT_TYPE. */
   attachment?: AttachmentPayload;
+  /** Parsed event cuando contentType === SYSTEM_CONTENT_TYPE. */
+  systemEvent?: SystemEvent;
 }
 
 type DeviceKeyMap = Record<string, DeviceKey>;
@@ -83,6 +91,15 @@ export default function ChatPage() {
 
   const decryptMessage = useCallback(
     async (msg: Message, kp: IdentityKeypair): Promise<RenderedMessage> => {
+      // Mensajes de sistema: content en plaintext, no E2EE, visible a todos.
+      if (msg.contentType === SYSTEM_CONTENT_TYPE && msg.content !== null) {
+        try {
+          const ev = JSON.parse(msg.content) as SystemEvent;
+          return { ...msg, plaintext: msg.content, status: "system", systemEvent: ev };
+        } catch {
+          return { ...msg, plaintext: null, status: "decrypt_error" };
+        }
+      }
       if (msg.content !== null && msg.envelope === null) {
         return { ...msg, plaintext: msg.content, status: "legacy" };
       }
@@ -488,8 +505,22 @@ export default function ChatPage() {
               </p>
             </header>
 
+            <SecurityBanner conversationId={selectedConv.id} />
+
             <div ref={scrollRef} className="messages">
+              <Watermark username={me.user.username} />
               {messages.map((msg) => {
+                // Avisos de sistema: centrados, sin bubble, sin sender.
+                if (msg.status === "system" && msg.systemEvent) {
+                  return (
+                    <SystemNotice
+                      key={msg.id}
+                      ev={msg.systemEvent}
+                      createdAt={msg.createdAt}
+                    />
+                  );
+                }
+
                 const mine = msg.senderUserId === me.user.id;
                 const sender = selectedConv.members.find(
                   (m) => m.userId === msg.senderUserId,
@@ -605,6 +636,30 @@ function fileIconFor(mime: string): string {
   return "📎";
 }
 
+function SystemNotice({ ev, createdAt }: { ev: SystemEvent; createdAt: string }) {
+  const time = new Date(createdAt).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  let text: React.ReactNode = null;
+  if (ev.kind === "attachment_downloaded") {
+    text = (
+      <>
+        📥 <strong>{ev.actor.displayName}</strong> descargó{" "}
+        <em>&ldquo;{ev.target.fileName}&rdquo;</em>
+      </>
+    );
+  }
+
+  return (
+    <div className="system-notice">
+      <span className="system-notice-body">{text}</span>
+      <span className="system-notice-time">{time}</span>
+    </div>
+  );
+}
+
 function AttachmentBubble({ att }: { att: AttachmentPayload }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -619,6 +674,7 @@ function AttachmentBubble({ att }: { att: AttachmentPayload }) {
         fileIv: att.fileIv,
         fileName: att.fileName,
         mime: att.mime,
+        byteSize: att.byteSize,
       });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "download_failed");

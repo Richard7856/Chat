@@ -309,6 +309,38 @@ export async function insertEncryptedMessage(params: {
 }
 
 /**
+ * Inserta un mensaje de sistema (aviso no-E2EE visible a todos): el JSON
+ * del evento va en `content` en plaintext y `content_type` es el
+ * SYSTEM_CONTENT_TYPE. No hay envelopes. Se broadcasta por socket al
+ * CONV_ROOM para que todos los miembros conectados lo vean.
+ */
+export async function insertSystemMessage(params: {
+  conversationId: string;
+  senderUserId: string;
+  senderDeviceId: string;
+  content: string;
+  contentType: string;
+}): Promise<{ messageId: string; createdAt: Date }> {
+  const r = await pool.query<{ id: string; created_at: Date }>(
+    `INSERT INTO messages (conversation_id, sender_user_id, sender_device_id, content, content_type)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, created_at`,
+    [
+      params.conversationId,
+      params.senderUserId,
+      params.senderDeviceId,
+      params.content,
+      params.contentType,
+    ],
+  );
+  await pool.query(
+    "UPDATE conversations SET updated_at = now() WHERE id = $1",
+    [params.conversationId],
+  );
+  return { messageId: r.rows[0]!.id, createdAt: r.rows[0]!.created_at };
+}
+
+/**
  * Fetch todos los dispositivos activos de los miembros de una conversación
  * (incluyendo los propios del caller). El cliente los necesita para cifrar
  * el mensaje una vez por dispositivo.

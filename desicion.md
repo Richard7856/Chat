@@ -42,11 +42,34 @@ HOSTINGER.md               Runbook de deploy
 desicion.md                ESTE archivo
 ```
 
+### Convenciones fijas del proyecto (Fase 8+)
+
+Estas decisiones quedan congeladas para features futuros, a menos que el
+usuario pida cambiarlas explícitamente:
+
+- **Avisos de seguridad: visibles a TODOS los miembros** de la conversación
+  (transparencia > privacidad individual en contexto corporativo). Se
+  implementan como mensajes de sistema no-E2EE (`contentType =
+  application/vnd.euromex.system+json`, `content` en plaintext, `envelope
+  null`). El server los broadcasta por CONV_ROOM.
+- **Watermark del chat:** formato `@username · YYYY-MM-DD HH:MM` (UTC) —
+  el timestamp ayuda al forense post-leak. Actualización cada minuto.
+  Opacity 0.05 sobre color del texto del chat, rotación -20°.
+- **Banners informativos:** dismissibles por conversación vía localStorage.
+  Key: `euromex.security-banner.acked` (objeto con conversationId → true).
+  Se re-muestran si el usuario limpia cache.
+- **Todo evento sensible se registra en `audit_log`** además de su posible
+  broadcast como mensaje de sistema. Forense disponible incluso si se
+  borra un mensaje.
+
 ### Invariantes que no deben romperse
 
-- **E2EE:** el server NUNCA ve plaintext. Los mensajes viajan como `envelope`
-  (ciphertext + nonce) por cada dispositivo destinatario. Los adjuntos como
-  blobs AES-256-GCM en disco; la clave AES viaja en el plaintext del mensaje.
+- **E2EE:** el server NUNCA ve plaintext de mensajes de usuario. Los
+  mensajes viajan como `envelope` (ciphertext + nonce) por cada dispositivo
+  destinatario. Los adjuntos como blobs AES-256-GCM en disco; la clave AES
+  viaja en el plaintext del mensaje. **Excepción documentada:** los
+  mensajes de sistema (avisos) SÍ van en plaintext porque son audit events
+  que el server necesita generar — son del server, no del usuario.
 - **pnpm workspaces:** cada paquete tiene su propio `node_modules/.bin/`. NO
   hay hoist a la raíz. systemd/scripts deben usar rutas absolutas:
   `/opt/euromex/apps/api/node_modules/.bin/tsx`, etc.
@@ -151,6 +174,45 @@ pide:
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-04-19] Fase 8.1 — Avisos de seguridad (download + watermark + banner)
+
+- **Qué se decidió:** implementar 3 capas de "security notices" en el chat:
+  (A) mensaje de sistema cuando alguien descarga un adjunto, visible a
+  todos los miembros; (B1) watermark dinámico con `@username · timestamp`
+  sobre el área de mensajes; (B2) banner informativo al entrar a cada
+  conversación, dismissible por conversación.
+- **Por qué:** el usuario pidió "aviso cuando alguien tome captura de
+  pantalla o descargue un archivo". Las capturas de pantalla NO son
+  detectables en web/PWA (no hay API), así que combinamos disuasión
+  (watermark + banner) con detección real (download notify).
+- **Mensajes de sistema ≠ mensajes de usuario:** nuevo content type
+  `application/vnd.euromex.system+json`, `content` en plaintext con el
+  evento JSON, `envelope = null`. El server los inserta en `messages` y
+  broadcasta por CONV_ROOM. La convención de "visible a todos" quedó
+  fijada como default del proyecto.
+- **Watermark deliberadamente útil forense:** formato
+  `@username · YYYY-MM-DD HH:MM` (UTC) — si alguien filtra screenshot,
+  su nombre y minuto salen encima. Opacity 0.05 es apenas visible en
+  pantalla pero legible en screenshot comprimido.
+- **Impacto:**
+  - `packages/shared/src/schemas.ts`: `SYSTEM_CONTENT_TYPE`,
+    `SystemEventSchema`, `AttachmentDownloadedNotifySchema`.
+  - `apps/api/src/chat/repo.ts`: `insertSystemMessage`.
+  - `apps/api/src/chat/socket.ts`: `broadcastSystemMessage` que emite a
+    CONV_ROOM (no DEVICE_ROOM como los E2EE).
+  - `apps/api/src/routes/attachments.ts`: `POST /attachments/:id/downloaded`
+    — el cliente avisa al server, el server genera el mensaje de sistema
+    + audit_log.
+  - `apps/web/app/lib/attachments.ts`: `notifyDownload` best-effort tras
+    decrypt exitoso.
+  - `apps/web/app/app/chat/page.tsx`: `SystemNotice` renderer (centrado,
+    pill style, no bubble) + nuevo status `"system"` en `RenderedMessage`.
+  - `apps/web/app/components/watermark.tsx`: SVG tileable, updater cada
+    minuto.
+  - `apps/web/app/components/security-banner.tsx`: dismissible con
+    localStorage per-conversation.
+- **Convenciones documentadas en el onboarding.**
 
 ### [2026-04-19] Fase 7 — Deploy real: sslip.io + socat proxies + ruta absoluta en systemd
 

@@ -241,6 +241,36 @@ function fanOutMessage(
   }
 }
 
+/**
+ * Broadcasts un mensaje de sistema (aviso no-E2EE) al CONV_ROOM. A diferencia
+ * de fanOutMessage (que va dispositivo-a-dispositivo con envelopes), los
+ * avisos son visibles a todos los miembros con el mismo plaintext.
+ */
+export function broadcastSystemMessage(
+  app: FastifyInstance,
+  params: {
+    messageId: string;
+    conversationId: string;
+    actorUserId: string;
+    actorDeviceId: string;
+    contentJson: string;
+    contentType: string;
+    createdAt: Date;
+  },
+) {
+  const msg: Message = {
+    id: params.messageId,
+    conversationId: params.conversationId,
+    senderUserId: params.actorUserId,
+    senderDeviceId: params.actorDeviceId,
+    content: params.contentJson,
+    contentType: params.contentType,
+    createdAt: params.createdAt.toISOString(),
+    envelope: null,
+  };
+  app.io?.to(CONV_ROOM(params.conversationId)).emit("message:new", msg);
+}
+
 export function broadcastConversationUpdated(
   app: FastifyInstance,
   conv: Conversation,

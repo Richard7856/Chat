@@ -127,6 +127,7 @@ export async function downloadFileToUser(params: {
   fileIv: string;
   fileName: string;
   mime: string;
+  byteSize: number;
 }): Promise<void> {
   const blob = await downloadAndDecrypt(params);
   const url = URL.createObjectURL(blob);
@@ -142,6 +143,29 @@ export async function downloadFileToUser(params: {
     // Deja un tick para que el browser tome el blob antes de revocarlo.
     setTimeout(() => URL.revokeObjectURL(url), 5_000);
   }
+
+  // Notifica al server (best-effort). Crea un mensaje de sistema visible
+  // a todos los miembros de la conversación. Si falla, no rompe la UX.
+  notifyDownload(params.attachmentId, params.fileName, params.byteSize).catch(
+    () => {},
+  );
+}
+
+async function notifyDownload(
+  attachmentId: string,
+  fileName: string,
+  byteSize: number,
+): Promise<void> {
+  const session = loadSession();
+  if (!session) return;
+  await fetch(`${API_BASE}/attachments/${attachmentId}/downloaded`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.accessToken}`,
+    },
+    body: JSON.stringify({ fileName, byteSize }),
+  });
 }
 
 export function formatBytes(n: number): string {
