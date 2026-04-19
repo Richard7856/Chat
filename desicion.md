@@ -4,50 +4,149 @@
 > sobre qué se ha decidido, por qué, y qué sigue. Cada commit significativo
 > debe agregar una entrada aquí.
 
+## Onboarding rápido (para retomar en sesión nueva)
+
+### Qué es este proyecto
+
+Chat privado E2EE self-hosted para Grupo Euromex. Reemplazo interno de WhatsApp
+para <25 personas. Stack: Next.js 15 + Fastify + Postgres + Redis + Socket.IO
++ NaCl (tweetnacl) para E2EE. PWA instalable en móvil. Deploy en VPS
+Hostinger detrás de Traefik propio del usuario.
+
+### Qué leer antes de tocar nada
+
+1. **Este archivo (`desicion.md`)** — el "Estado actual" y el "Historial de
+   decisiones" te dan todo el contexto de **qué hay vivo y por qué cada
+   decisión** (incluyendo las descartadas).
+2. **`HOSTINGER.md`** — runbook operacional: cómo desplegar, cómo actualizar,
+   cómo hacer backup/restore, troubleshooting común.
+3. **El plan original** en `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
+   para ver el scope que se acordó con el usuario.
+
+### Estructura del repo
+
+```
+apps/
+  api/     Fastify + Socket.IO + scripts CLI (create-admin, reset-password)
+  web/     Next.js 15 (App Router) + PWA + client-side crypto
+packages/
+  shared/  Zod schemas compartidos (auth, chat, attachments)
+  crypto/  Wrappers NaCl (tweetnacl) — E2EE primitivas
+infra/
+  docker-compose.yml       Postgres + Redis locales
+  traefik/                 Template YAML file provider (NO usado, ver decisiones)
+  traefik-proxies/         SÍ usado: socat proxies con labels Docker
+  systemd/                 Units para API, web, backup timer
+  scripts/                 backup.sh, restore.sh, install-systemd.sh
+HOSTINGER.md               Runbook de deploy
+desicion.md                ESTE archivo
+```
+
+### Invariantes que no deben romperse
+
+- **E2EE:** el server NUNCA ve plaintext. Los mensajes viajan como `envelope`
+  (ciphertext + nonce) por cada dispositivo destinatario. Los adjuntos como
+  blobs AES-256-GCM en disco; la clave AES viaja en el plaintext del mensaje.
+- **pnpm workspaces:** cada paquete tiene su propio `node_modules/.bin/`. NO
+  hay hoist a la raíz. systemd/scripts deben usar rutas absolutas:
+  `/opt/euromex/apps/api/node_modules/.bin/tsx`, etc.
+- **tsx en producción:** API corre con `tsx src/server.ts` (no `node dist/`)
+  porque `@euromex/shared` y `@euromex/crypto` exportan `.ts` directamente.
+  Migrar a dist/ requiere agregar build step a esos paquetes.
+- **MASTER_ENC_KEY y EUROMEX_BACKUP_PASSPHRASE no pueden perderse.** Primer
+  descifra TOTP, segundo descifra backups. Sin ellas, recuperación imposible.
+  Viven en `apps/api/.env` y `/etc/euromex/backup.env` respectivamente.
+- **Coexistencia con n8n:** este VPS también corre n8n + Traefik + email-admin
+  de otro proyecto del usuario. NO tocar `root-*` containers, NO `apt upgrade -y`,
+  NO `ufw --force enable` sin permiso. Ver decisión del 2026-04-17.
+
+### Comandos más usados
+
+```bash
+# Estado de los servicios
+systemctl status euromex-api euromex-web --no-pager
+
+# Logs en vivo
+journalctl -u euromex-api -f
+
+# Deploy de código nuevo
+cd /opt/euromex && git pull && pnpm install
+cd apps/web && pnpm build
+systemctl restart euromex-api euromex-web
+
+# Crear admin nuevo
+cd /opt/euromex/apps/api
+ADMIN_USERNAME=x ADMIN_PASSWORD='xxx' ADMIN_DISPLAY='X' \
+  /opt/euromex/apps/api/node_modules/.bin/tsx src/scripts/create-admin.ts
+
+# Backup manual
+sudo systemctl start euromex-backup.service
+```
+
+---
+
 ## Estado actual
 
-- **Fase:** 7 — Producción **desplegada y operacional** en el VPS
-- **URL pública:** `https://chat.148-230-82-52.sslip.io` (HTTPS con cert LE)
-- **API:** `https://api.chat.148-230-82-52.sslip.io` (socket.io + REST)
-- **systemd:** `euromex-api` + `euromex-web` activos, auto-restart habilitado
-- **Backups:** timer diario activo, primer backup manual ejecutado OK
-- **Paso final:** 7 — Producción (completada, cierra el proyecto)
-- **Paso dentro de la fase:** template de Traefik dinámico con TLS
-  + HSTS + CSP + rate limit, unidades systemd para API/web con
-  auto-restart, script de backup diario cifrado con GPG AES-256 +
-  timer systemd, script de restore para disaster recovery, helper
-  install-systemd.sh, checklist de producción documentado.
-- **Última actualización:** 2026-04-17
+- **Fase:** 7 — Producción **desplegada y operacional** en el VPS ✅
+- **Proyecto:** cerrado. Todas las 7 fases del plan completadas.
+- **Última actualización:** 2026-04-19
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
-- **Deploy actual:** API v0.5.0 en staging (HTTP:3100/4000 por IP);
-  pendiente migrar a producción (HTTPS vía Traefik + dominio + systemd
-  + backups).
+- **Commit HEAD:** `3c61939 fix(systemd): paths absolutos para binarios de pnpm workspaces`
+
+### Producción actual (VPS Hostinger, 148.230.82.52)
+
+| Componente | URL / Ubicación | Estado |
+|------------|-----------------|--------|
+| Web (Next.js 15) | `https://chat.148-230-82-52.sslip.io` | Live, HTTPS LE ✅ |
+| API (Fastify + Socket.IO) | `https://api.chat.148-230-82-52.sslip.io` | v0.5.0, Live ✅ |
+| Postgres 16 | `127.0.0.1:5432` (Docker) | Healthy |
+| Redis 7 | `127.0.0.1:6379` (Docker) | Healthy |
+| Storage adjuntos | `/opt/euromex/storage/` | fs local, 700 |
+| Backups | `/opt/euromex/backups/` | GPG AES-256, timer diario 03:00 UTC |
+| Proxies Traefik | `euromex-{web,api}-proxy` (Docker, `root_default`) | Healthy |
+| systemd | `euromex-api.service`, `euromex-web.service` | Active, auto-restart |
+
+### Dominio temporal (sslip.io)
+
+Actualmente se usa `*.148-230-82-52.sslip.io` (servicio público wildcard DNS
+que resuelve el IP embebido). Razón: DNS de `grupoeuromex.com` en Hostinger no
+publicaba los A records (SOA serial congelado). Migración a `chat.grupoeuromex.com`
+pendiente de aprobación de directivos de Euromex. **Cutover es ~3 comandos de
+`sed` + rebuild + restart** (ver "Mejoras futuras" abajo).
 
 ## Próximos pasos
 
-1. **Usuario — cuando tengas dominio apuntando al VPS:** seguir la
-   sección "Fase 7 — Producción" de `HOSTINGER.md` paso por paso.
-   Incluye:
-   - Copiar `infra/traefik/euromex.yml` al dir dinámico de Traefik
-     (reemplazando dominios).
-   - Actualizar `CORS_ORIGINS` y `NEXT_PUBLIC_API_BASE` a https.
-   - Ejecutar `install-systemd.sh` para migrar de nohup a systemd.
-   - Cerrar puertos 3100/4000 en el firewall externo de Hostinger.
-   - Configurar `/etc/euromex/backup.env` con la passphrase de backup
-     y habilitar el timer.
-2. **Usuario — post-producción:** ejecutar el checklist de Fase 7
-   en `HOSTINGER.md` (13 items: DNS, cert, SSL Labs A+, reboot test,
-   firewall cerrado, backup manual exitoso, passphrases en 2 gestores,
-   PWA instalable con candado verde, smoke test E2EE end-to-end).
-3. **Proyecto cerrado.** Mejoras futuras (opcionales, sin orden):
-   - Build proper de `@euromex/shared` y `@euromex/crypto` a `dist/`
-     para correr con `node` en vez de `tsx` (más rápido cold-start).
-   - Push notifications web (requiere service worker activo → HTTPS
-     ya cubierto, falta integrar VAPID keys).
-   - Panel admin expandido (listar usuarios, revocar devices desde
-     UI, audit log browser).
-   - Monitoring: uptime-kuma autoinstalado o Grafana+Loki si crece
+**No hay pasos bloqueantes.** El proyecto está vivo y operacional. Solo hay
+mejoras opcionales que puede abordar una siguiente sesión si el usuario las
+pide:
+
+1. **Migrar a dominio final `chat.grupoeuromex.com`** cuando los directivos
+   autoricen mover DNS (o cuando Hostinger publique los A records):
+   ```bash
+   sed -i 's|chat.148-230-82-52.sslip.io|chat.grupoeuromex.com|g; s|api.chat.148-230-82-52.sslip.io|api.chat.grupoeuromex.com|g' \
+     /opt/euromex/infra/traefik-proxies/docker-compose.yml \
+     /opt/euromex/apps/api/.env \
+     /opt/euromex/apps/web/.env.local
+   cd /opt/euromex/apps/web && pnpm build
+   cd /opt/euromex/infra/traefik-proxies && docker compose up -d --force-recreate
+   systemctl restart euromex-api euromex-web
+   ```
+   Traefik pide certs LE nuevos en ~30 seg. Los usuarios deben re-loguear
+   (localStorage es por-origin).
+
+2. **Backup off-site**: editar `/etc/euromex/backup.env` y añadir
+   `REMOTE_RSYNC=user@host:/path`. El script ya lo soporta.
+
+3. **Mejoras no-urgentes que puede haber pedido el usuario:**
+   - Build real de `@euromex/shared` y `@euromex/crypto` a `dist/` para
+     correr con `node` puro en vez de `tsx` (~200ms faster cold-start).
+   - Push notifications web (VAPID keys en API + service worker).
+   - Panel admin expandido (listar usuarios, revocar devices desde UI,
+     browser de audit_log).
+   - Monitoring pasivo: uptime-kuma self-hosted.
+   - Fix del error chronic de `mail.grupoeuromex.com` en Traefik (no
+     relacionado con este proyecto pero el log lo muestra cada día).
      el equipo.
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
