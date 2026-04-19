@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS users (
   totp_secret_enc BYTEA NOT NULL,
   role            TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin')),
   status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
+  -- Si TRUE, este usuario recibe los avisos de seguridad (descargas,
+  -- miembros añadidos, etc.) en las conversaciones donde participe. El
+  -- bootstrap admin lo trae activo por default; los usuarios regulares no.
+  receives_security_alerts BOOLEAN NOT NULL DEFAULT false,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );

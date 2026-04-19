@@ -7,7 +7,11 @@ import {
   type UploadAttachmentResponse,
 } from "@euromex/shared";
 import { requireAuth } from "../auth/jwt.js";
-import { insertSystemMessage, isConversationMember } from "../chat/repo.js";
+import {
+  getAlertWatchersInConversation,
+  insertSystemMessage,
+  isConversationMember,
+} from "../chat/repo.js";
 import {
   getAttachmentForUser,
   insertAttachment,
@@ -144,6 +148,7 @@ export async function attachmentRoutes(app: FastifyInstance) {
         ],
       );
 
+      const watcherUserIds = await getAlertWatchersInConversation(att.conversation_id);
       broadcastSystemMessage(app, {
         messageId,
         conversationId: att.conversation_id,
@@ -152,6 +157,7 @@ export async function attachmentRoutes(app: FastifyInstance) {
         contentJson: JSON.stringify(event),
         contentType: SYSTEM_CONTENT_TYPE,
         createdAt,
+        watcherUserIds,
       });
 
       return reply.code(204).send();

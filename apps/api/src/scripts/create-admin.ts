@@ -41,8 +41,8 @@ async function main() {
   const totpSecretEnc = encryptSecret(key, totp.secret);
 
   const result = await pool.query<{ id: string }>(
-    `INSERT INTO users (username, display_name, email, password_hash, totp_secret_enc, role)
-     VALUES ($1, $2, $3, $4, $5, 'admin')
+    `INSERT INTO users (username, display_name, email, password_hash, totp_secret_enc, role, receives_security_alerts)
+     VALUES ($1, $2, $3, $4, $5, 'admin', true)
      RETURNING id`,
     [username, displayName, email ?? null, passwordHash, totpSecretEnc],
   );

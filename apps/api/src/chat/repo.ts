@@ -4,8 +4,23 @@ import type {
   ConversationType,
   DeviceKey,
   Message,
+  SystemActor,
 } from "@euromex/shared";
 import { pool } from "../db/pg.js";
+
+/**
+ * Carga los datos mínimos para armar un SystemActor (userId, username,
+ * displayName) desde un user id. Usado por los emisores de system events.
+ */
+export async function loadSystemActor(userId: string): Promise<SystemActor | null> {
+  const r = await pool.query<{ username: string; display_name: string }>(
+    "SELECT username, display_name FROM users WHERE id = $1",
+    [userId],
+  );
+  const u = r.rows[0];
+  if (!u) return null;
+  return { userId, username: u.username, displayName: u.display_name };
+}
 
 export interface IncomingEnvelope {
   recipientDeviceId: string;
@@ -309,10 +324,30 @@ export async function insertEncryptedMessage(params: {
 }
 
 /**
- * Inserta un mensaje de sistema (aviso no-E2EE visible a todos): el JSON
- * del evento va en `content` en plaintext y `content_type` es el
- * SYSTEM_CONTENT_TYPE. No hay envelopes. Se broadcasta por socket al
- * CONV_ROOM para que todos los miembros conectados lo vean.
+ * Lista los userIds de los miembros de una conversación que tienen
+ * activo el flag `receives_security_alerts`. Solo ellos reciben los
+ * mensajes de sistema (avisos de descargas, etc.) por socket.
+ */
+export async function getAlertWatchersInConversation(
+  conversationId: string,
+): Promise<string[]> {
+  const r = await pool.query<{ user_id: string }>(
+    `SELECT cm.user_id
+       FROM conversation_members cm
+       JOIN users u ON u.id = cm.user_id
+      WHERE cm.conversation_id = $1
+        AND u.status = 'active'
+        AND u.receives_security_alerts = true`,
+    [conversationId],
+  );
+  return r.rows.map((row) => row.user_id);
+}
+
+/**
+ * Inserta un mensaje de sistema (aviso no-E2EE visible solo a usuarios
+ * con `receives_security_alerts`): el JSON del evento va en `content` en
+ * plaintext y `content_type` es SYSTEM_CONTENT_TYPE. Se emite por socket
+ * solo a los USER_ROOMs de los watchers (regular users nunca lo reciben).
  */
 export async function insertSystemMessage(params: {
   conversationId: string;
@@ -394,16 +429,23 @@ export async function publishDeviceIdentity(
 export async function listMessages(params: {
   conversationId: string;
   requesterDeviceId: string;
+  /** Si false, filtra los mensajes de sistema (avisos) del historial. */
+  requesterWatchesAlerts: boolean;
   limit: number;
   before?: string;
 }): Promise<Message[]> {
-  const { conversationId, requesterDeviceId, limit, before } = params;
+  const { conversationId, requesterDeviceId, requesterWatchesAlerts, limit, before } = params;
   const values: unknown[] = [conversationId, requesterDeviceId, limit];
   let beforeClause = "";
   if (before) {
     values.push(before);
     beforeClause = `AND m.created_at < $${values.length}`;
   }
+  // Solo admins con receives_security_alerts ven los mensajes de sistema.
+  // Para el resto, los filtramos a nivel DB — no llegan ni siquiera al cliente.
+  const systemFilter = requesterWatchesAlerts
+    ? ""
+    : "AND m.content_type <> 'application/vnd.euromex.system+json'";
   const r = await pool.query<{
     id: string;
     conversation_id: string;
@@ -423,6 +465,7 @@ export async function listMessages(params: {
          ON e.message_id = m.id AND e.recipient_device = $2
       WHERE m.conversation_id = $1
         ${beforeClause}
+        ${systemFilter}
       ORDER BY m.created_at DESC
       LIMIT $3`,
     values,

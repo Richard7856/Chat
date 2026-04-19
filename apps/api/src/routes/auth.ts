@@ -335,12 +335,14 @@ export async function authRoutes(app: FastifyInstance) {
         display_name: string;
         email: string | null;
         role: "user" | "admin";
+        receives_security_alerts: boolean;
         device_id: string;
         device_name: string;
         platform: "web" | "ios" | "android" | "desktop";
         last_seen_at: Date | null;
       }>(
         `SELECT u.id, u.username, u.display_name, u.email, u.role,
+                u.receives_security_alerts,
                 d.id AS device_id, d.device_name, d.platform, d.last_seen_at
            FROM users u JOIN devices d ON d.user_id = u.id
           WHERE u.id = $1 AND d.id = $2`,
@@ -354,6 +356,7 @@ export async function authRoutes(app: FastifyInstance) {
           displayName: r.display_name,
           email: r.email,
           role: r.role,
+          receivesSecurityAlerts: r.receives_security_alerts,
         },
         device: {
           id: r.device_id,

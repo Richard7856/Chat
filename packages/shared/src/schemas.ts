@@ -117,6 +117,8 @@ export const MeResponseSchema = z.object({
     displayName: z.string(),
     email: z.string().email().nullable(),
     role: UserRoleSchema,
+    /** Si true, este usuario recibe avisos de seguridad (super admin). */
+    receivesSecurityAlerts: z.boolean(),
   }),
   device: z.object({
     id: z.string().uuid(),
@@ -300,19 +302,33 @@ export type UploadAttachmentResponse = z.infer<
  */
 export const SYSTEM_CONTENT_TYPE = "application/vnd.euromex.system+json";
 
+export const SystemActorSchema = z.object({
+  userId: z.string().uuid(),
+  username: z.string(),
+  displayName: z.string(),
+});
+export type SystemActor = z.infer<typeof SystemActorSchema>;
+
 export const SystemEventSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("attachment_downloaded"),
-    actor: z.object({
-      userId: z.string().uuid(),
-      username: z.string(),
-      displayName: z.string(),
-    }),
+    actor: SystemActorSchema,
     target: z.object({
       attachmentId: z.string().uuid(),
       fileName: z.string(),
       byteSize: z.number().int().nonnegative(),
     }),
+  }),
+  z.object({
+    kind: z.literal("conversation_created"),
+    actor: SystemActorSchema,
+    conversationType: ConversationTypeSchema,
+    memberUserIds: z.array(z.string().uuid()),
+  }),
+  z.object({
+    kind: z.literal("member_added"),
+    actor: SystemActorSchema,
+    addedMembers: z.array(SystemActorSchema).min(1),
   }),
 ]);
 export type SystemEvent = z.infer<typeof SystemEventSchema>;

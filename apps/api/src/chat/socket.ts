@@ -242,9 +242,13 @@ function fanOutMessage(
 }
 
 /**
- * Broadcasts un mensaje de sistema (aviso no-E2EE) al CONV_ROOM. A diferencia
- * de fanOutMessage (que va dispositivo-a-dispositivo con envelopes), los
- * avisos son visibles a todos los miembros con el mismo plaintext.
+ * Broadcasts un mensaje de sistema (aviso no-E2EE) solo a los watchers
+ * (usuarios con `receives_security_alerts=true` que son miembros de la
+ * conversación). Emite por USER_ROOM de cada watcher — regular users
+ * NUNCA reciben estos eventos por socket.
+ *
+ * Para que también apareczan en historial, el filtrado por rol se hace
+ * a nivel DB en `listMessages` (ver repo.ts).
  */
 export function broadcastSystemMessage(
   app: FastifyInstance,
@@ -256,6 +260,7 @@ export function broadcastSystemMessage(
     contentJson: string;
     contentType: string;
     createdAt: Date;
+    watcherUserIds: string[];
   },
 ) {
   const msg: Message = {
@@ -268,7 +273,9 @@ export function broadcastSystemMessage(
     createdAt: params.createdAt.toISOString(),
     envelope: null,
   };
-  app.io?.to(CONV_ROOM(params.conversationId)).emit("message:new", msg);
+  for (const userId of params.watcherUserIds) {
+    app.io?.to(USER_ROOM(userId)).emit("message:new", msg);
+  }
 }
 
 export function broadcastConversationUpdated(

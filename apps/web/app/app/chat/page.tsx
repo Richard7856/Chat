@@ -40,6 +40,7 @@ interface MeResponse {
     displayName: string;
     email: string | null;
     role: "user" | "admin";
+    receivesSecurityAlerts: boolean;
   };
   device: {
     id: string;
@@ -650,7 +651,25 @@ function SystemNotice({ ev, createdAt }: { ev: SystemEvent; createdAt: string })
         <em>&ldquo;{ev.target.fileName}&rdquo;</em>
       </>
     );
+  } else if (ev.kind === "conversation_created") {
+    text = (
+      <>
+        🆕 <strong>{ev.actor.displayName}</strong> creó{" "}
+        {ev.conversationType === "group" ? "el grupo" : "esta conversación"}{" "}
+        con {ev.memberUserIds.length} miembros
+      </>
+    );
+  } else if (ev.kind === "member_added") {
+    const names = ev.addedMembers.map((m) => m.displayName).join(", ");
+    text = (
+      <>
+        ➕ <strong>{ev.actor.displayName}</strong> agregó a{" "}
+        <strong>{names}</strong>
+      </>
+    );
   }
+
+  if (!text) return null;
 
   return (
     <div className="system-notice">

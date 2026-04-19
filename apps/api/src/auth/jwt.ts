@@ -10,6 +10,12 @@ export interface SessionClaims {
   role: UserRole;
 }
 
+/** Sesión enriquecida: JWT claims + datos frescos de DB (runtime). */
+export interface SessionContext extends SessionClaims {
+  /** Si true, este usuario recibe avisos de seguridad (system messages). */
+  watchesAlerts: boolean;
+}
+
 declare module "@fastify/jwt" {
   interface FastifyJWT {
     payload: SessionClaims;
@@ -19,7 +25,7 @@ declare module "@fastify/jwt" {
 
 declare module "fastify" {
   interface FastifyRequest {
-    session?: SessionClaims;
+    session?: SessionContext;
   }
 }
 
@@ -43,8 +49,13 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply): Pro
   }
 
   const claims = req.user as SessionClaims;
-  const result = await pool.query<{ user_status: string; device_status: string }>(
-    `SELECT u.status AS user_status, d.status AS device_status
+  const result = await pool.query<{
+    user_status: string;
+    device_status: string;
+    watches_alerts: boolean;
+  }>(
+    `SELECT u.status AS user_status, d.status AS device_status,
+            u.receives_security_alerts AS watches_alerts
        FROM users u
        JOIN devices d ON d.user_id = u.id
       WHERE u.id = $1 AND d.id = $2`,
@@ -57,7 +68,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply): Pro
     return;
   }
 
-  req.session = claims;
+  req.session = { ...claims, watchesAlerts: row.watches_alerts };
 
   // Actualización best-effort de last_seen (sin bloquear la request).
   pool

@@ -4,28 +4,36 @@ import {
   CreateConversationRequestSchema,
   PublishIdentityRequestSchema,
   SendMessageRequestSchema,
+  SYSTEM_CONTENT_TYPE,
   type Conversation,
   type DeviceKey,
   type Message,
   type ServerToClientEvents,
   type ClientToServerEvents,
+  type SystemEvent,
   type UserListItem,
 } from "@euromex/shared";
 import { requireAuth } from "../auth/jwt.js";
 import {
   createConversation,
   findDmBetween,
+  getAlertWatchersInConversation,
   getConversationDeviceKeys,
   getConversationForUser,
   insertEncryptedMessage,
+  insertSystemMessage,
   isConversationMember,
   listConversationsForUser,
   listMessages,
   listUsers,
+  loadSystemActor,
   markConversationRead,
   publishDeviceIdentity,
 } from "../chat/repo.js";
-import { broadcastConversationUpdated } from "../chat/socket.js";
+import {
+  broadcastConversationUpdated,
+  broadcastSystemMessage,
+} from "../chat/socket.js";
 
 const DEVICE_ROOM = (id: string) => `device:${id}`;
 
@@ -120,6 +128,40 @@ export async function conversationRoutes(app: FastifyInstance) {
       }
 
       broadcastConversationUpdated(app, conv);
+
+      // System event "conversation_created" — solo para grupos (los DMs
+      // son 1-a-1, la contraparte ya sabe que existe). Solo visible a
+      // watchers (super admins).
+      if (type === "group") {
+        const actor = await loadSystemActor(userId);
+        if (actor) {
+          const event: SystemEvent = {
+            kind: "conversation_created",
+            actor,
+            conversationType: type,
+            memberUserIds: conv.members.map((m) => m.userId),
+          };
+          const { messageId, createdAt } = await insertSystemMessage({
+            conversationId: conv.id,
+            senderUserId: userId,
+            senderDeviceId: req.session!.did,
+            content: JSON.stringify(event),
+            contentType: SYSTEM_CONTENT_TYPE,
+          });
+          const watcherUserIds = await getAlertWatchersInConversation(conv.id);
+          broadcastSystemMessage(app, {
+            messageId,
+            conversationId: conv.id,
+            actorUserId: userId,
+            actorDeviceId: req.session!.did,
+            contentJson: JSON.stringify(event),
+            contentType: SYSTEM_CONTENT_TYPE,
+            createdAt,
+            watcherUserIds,
+          });
+        }
+      }
+
       return conv;
     },
   );
@@ -173,6 +215,7 @@ export async function conversationRoutes(app: FastifyInstance) {
       const messages = await listMessages({
         conversationId: req.params.id,
         requesterDeviceId: req.session!.did,
+        requesterWatchesAlerts: req.session!.watchesAlerts,
         limit,
         before: req.query.before,
       });

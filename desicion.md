@@ -47,11 +47,16 @@ desicion.md                ESTE archivo
 Estas decisiones quedan congeladas para features futuros, a menos que el
 usuario pida cambiarlas explícitamente:
 
-- **Avisos de seguridad: visibles a TODOS los miembros** de la conversación
-  (transparencia > privacidad individual en contexto corporativo). Se
-  implementan como mensajes de sistema no-E2EE (`contentType =
+- **Avisos de seguridad: visibles SOLO a usuarios con
+  `receives_security_alerts=true`** (super admins). Bootstrap admin lo
+  trae activo por default. Regular users no ven los system messages ni
+  en vivo (socket emite a USER_ROOMs filtrados) ni en historia (query
+  filtra por content_type). El flag es per-user, desacoplado del
+  `role='admin'` — permite admins operativos sin privilegios forenses
+  y vice-versa. **Revisa a la convención de Fase 8.1 ("visible a todos").**
+- Se implementan como mensajes de sistema no-E2EE (`contentType =
   application/vnd.euromex.system+json`, `content` en plaintext, `envelope
-  null`). El server los broadcasta por CONV_ROOM.
+  null`).
 - **Watermark del chat:** formato `@username · YYYY-MM-DD HH:MM` (UTC) —
   el timestamp ayuda al forense post-leak. Actualización cada minuto.
   Opacity 0.05 sobre color del texto del chat, rotación -20°.
@@ -174,6 +179,48 @@ pide:
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-04-19] Fase 8.2 — Super admin: alertas solo para watchers
+
+- **Qué se decidió:** añadir columna `users.receives_security_alerts` (default
+  `false`; admins bootstrap la traen `true`). Los mensajes de sistema solo
+  son visibles a quienes tienen ese flag. Regular users ni los ven en vivo
+  ni en historia.
+- **Por qué:** la convención de Fase 8.1 era "visibles a todos los miembros"
+  — el usuario pidió acotar a super admin ("que no le lleguen a todos").
+  Esta iteración revisa la convención:
+  - Alertas ahora son privilegiadas (privacy > transparency para el colectivo).
+  - Flag per-user, no hardcodeado al `role='admin'` — así en el futuro
+    puedes tener admins operativos (crean invitaciones) sin privilegios
+    forenses, y viceversa.
+- **Implementación:**
+  - `users.receives_security_alerts BOOLEAN DEFAULT false`.
+  - `requireAuth` pobla `req.session.watchesAlerts` con query fresca a DB.
+  - `listMessages` filtra `content_type = SYSTEM_CONTENT_TYPE` cuando el
+    requester no es watcher.
+  - `broadcastSystemMessage` emite a USER_ROOM de cada watcher (antes:
+    CONV_ROOM = todos los miembros). Regular users nunca reciben el socket.
+  - `getAlertWatchersInConversation` devuelve la lista de watchers para
+    una conversación.
+  - `MeResponse.user.receivesSecurityAlerts` expuesto al cliente — futuro
+    panel admin puede condicionar UI en este flag.
+- **Nuevos eventos además de `attachment_downloaded`:** `conversation_created`
+  (grupos nuevos, incluye lista de miembros), `member_added` (schema ya
+  definido para cuando exista endpoint de add-member a conversación
+  existente).
+- **Impacto:** `apps/api/src/db/schema.sql` + migración 005 (alter table +
+  backfill admins existentes), `auth/jwt.ts` (SessionContext), `chat/repo.ts`
+  (helper + filter + loadSystemActor), `chat/socket.ts` (broadcast a
+  USER_ROOM), `routes/attachments.ts` (pasa watchers al broadcast),
+  `routes/conversations.ts` (emite conversation_created en grupos nuevos),
+  `routes/auth.ts` (MeResponse con flag), `packages/shared/src/schemas.ts`
+  (SystemActor + union extendido), `apps/web/app/app/chat/page.tsx`
+  (render de los 3 kinds).
+- **Migración para producción:**
+  ```
+  docker exec -i euromex-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    < apps/api/src/db/migrations/005-security-alerts.sql
+  ```
 
 ### [2026-04-19] Fase 8.1 — Avisos de seguridad (download + watermark + banner)
 

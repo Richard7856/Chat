@@ -294,6 +294,13 @@ pnpm build
 #     -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
 #     < apps/api/src/db/migrations/003-add-attachments.sql
 #
+# Fase 8.2 (super admin / alertas privilegiadas): añade columna
+# receives_security_alerts a users; backfill admins existentes a true.
+# source infra/.env && \
+#   docker exec -i euromex-postgres psql \
+#     -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+#     < apps/api/src/db/migrations/005-security-alerts.sql
+#
 # Fase 6 (PWA): sin migración. Solo rebuild de la web:
 # cd apps/web && pnpm build
 # El resultado incluye /manifest.webmanifest, /icon, /apple-icon.
