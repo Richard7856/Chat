@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { ShieldCheck, X } from "lucide-react";
+import { Button } from "./ui/button";
 
 const STORAGE_KEY = "euromex.security-banner.acked";
 
@@ -11,23 +13,17 @@ interface Props {
 /**
  * Banner informativo que aparece la primera vez que se abre una conversación.
  * Se cierra con "Entendido" y persiste en localStorage por-conversación.
- *
- * Convención del proyecto (fija para Fase 8+): visible una sola vez por
- * conversación por-dispositivo; si limpias localStorage vuelve a salir.
  */
 export function SecurityBanner({ conversationId }: Props) {
-  // Estado: hydrated=false en primer render (SSR/hidration), luego true con
-  // el valor real de localStorage. Evita flash del banner en páginas nuevas.
   const [hydrated, setHydrated] = useState(false);
   const [acked, setAcked] = useState(true);
 
   useEffect(() => {
     setHydrated(true);
     try {
-      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as Record<
-        string,
-        boolean
-      >;
+      const stored = JSON.parse(
+        localStorage.getItem(STORAGE_KEY) || "{}",
+      ) as Record<string, boolean>;
       setAcked(!!stored[conversationId]);
     } catch {
       setAcked(false);
@@ -36,10 +32,9 @@ export function SecurityBanner({ conversationId }: Props) {
 
   function dismiss() {
     try {
-      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as Record<
-        string,
-        boolean
-      >;
+      const stored = JSON.parse(
+        localStorage.getItem(STORAGE_KEY) || "{}",
+      ) as Record<string, boolean>;
       stored[conversationId] = true;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
     } catch {}
@@ -49,15 +44,31 @@ export function SecurityBanner({ conversationId }: Props) {
   if (!hydrated || acked) return null;
 
   return (
-    <div className="sec-banner" role="note">
-      <div className="sec-banner-text">
-        🔒 Mensajes cifrados de extremo a extremo. Las capturas de pantalla
-        no se pueden detectar — dependemos de la confianza entre miembros.
-        Los archivos descargados quedan registrados en el chat.
+    <div
+      role="note"
+      className="relative z-10 border-b border-border bg-primary/5 px-4 py-3 text-sm animate-fade-in"
+    >
+      <div className="mx-auto flex max-w-4xl items-start gap-3">
+        <ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" />
+        <p className="flex-1 leading-relaxed text-muted-foreground">
+          <span className="font-medium text-foreground">
+            Cifrado de extremo a extremo.
+          </span>{" "}
+          Las capturas de pantalla no se pueden detectar — dependemos de la
+          confianza entre miembros. Los archivos descargados quedan
+          registrados en el chat.
+        </p>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={dismiss}
+          className="shrink-0"
+        >
+          Entendido
+          <X className="size-3.5" />
+        </Button>
       </div>
-      <button type="button" className="sec-banner-close" onClick={dismiss}>
-        Entendido
-      </button>
     </div>
   );
 }

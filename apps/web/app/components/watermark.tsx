@@ -5,18 +5,16 @@ import { useEffect, useMemo, useState } from "react";
 /**
  * Watermark tileado sobre el área de mensajes.
  *
- * Convención del proyecto (fija para Fase 8+): formato
- *   `@username · YYYY-MM-DD HH:MM`
- * — el timestamp ayuda al forense si un screenshot se filtra.
+ * Convención fija del proyecto: `@username · YYYY-MM-DD HH:MM` (UTC).
+ * El timestamp ayuda al forense si un screenshot se filtra — se puede
+ * identificar al responsable y el minuto exacto.
  *
- * Implementación: SVG con el texto rotado, convertido a data URL, usado como
- * background-image repeatable. pointer-events: none para no bloquear clicks.
- * Opacity ~0.05: apenas visible en pantalla, claramente legible en
- * screenshots (donde se comprime/reduce y los píxeles se mezclan).
+ * Implementación: SVG con texto rotado, convertido a data URL, usado
+ * como background-image tileable. pointer-events: none para no
+ * interferir con clicks. Opacity ~0.05: apenas visible en pantalla,
+ * legible en screenshots JPEG por compresión.
  */
 export function Watermark({ username }: { username: string }) {
-  // Se actualiza el timestamp cada minuto. En screenshots sucesivos de
-  // la misma conversación, el minuto cambia — útil para tracking.
   const [now, setNow] = useState<Date>(() => new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 60_000);
@@ -25,21 +23,18 @@ export function Watermark({ username }: { username: string }) {
 
   const label = useMemo(() => {
     const iso = now.toISOString();
-    // YYYY-MM-DD HH:MM en UTC para evitar ambigüedad de zona horaria
     const stamp = `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
     return `@${username} · ${stamp}`;
   }, [now, username]);
 
   const dataUri = useMemo(() => {
-    // Tile de 360x140 con el texto rotado ~-20°. Se repite horizontal y
-    // verticalmente. Color blanco con alfa 0.05 sobre fondo oscuro del chat.
     const safeLabel = label.replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const svg = `
-      <svg xmlns='http://www.w3.org/2000/svg' width='360' height='140'>
-        <text x='0' y='70' fill='rgba(230,236,255,0.05)'
-              font-family='system-ui, -apple-system, sans-serif'
-              font-size='14' font-weight='700'
-              transform='rotate(-20 180 70)'>
+      <svg xmlns='http://www.w3.org/2000/svg' width='380' height='150'>
+        <text x='0' y='75' fill='rgba(230,236,255,0.05)'
+              font-family='Inter, system-ui, sans-serif'
+              font-size='13' font-weight='600' letter-spacing='0.02em'
+              transform='rotate(-20 190 75)'>
           ${safeLabel}
         </text>
       </svg>
@@ -49,7 +44,7 @@ export function Watermark({ username }: { username: string }) {
 
   return (
     <div
-      className="watermark"
+      className="pointer-events-none absolute inset-0 z-0 bg-repeat"
       style={{ backgroundImage: `url("${dataUri}")` }}
       aria-hidden="true"
     />

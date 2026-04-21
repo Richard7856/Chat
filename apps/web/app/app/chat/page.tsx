@@ -2,13 +2,23 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  ArrowLeft,
+  Loader2,
+  Lock,
+  LogOut,
+  Paperclip,
+  Plus,
+  Search,
+  Send,
+  Sparkles,
+} from "lucide-react";
 import type {
   AttachmentPayload,
   Conversation,
   DeviceKey,
   Message,
   SystemEvent,
-  UserListItem,
 } from "@euromex/shared";
 import { ATTACHMENT_CONTENT_TYPE, SYSTEM_CONTENT_TYPE } from "@euromex/shared";
 import {
@@ -25,13 +35,22 @@ import {
 import { api, clearSession, loadSession } from "../../lib/api";
 import { ensureDeviceKeypair, clearKeypair } from "../../lib/keys";
 import { closeSocket, getSocket } from "../../lib/socket";
-import {
-  downloadFileToUser,
-  encryptAndUpload,
-  formatBytes,
-} from "../../lib/attachments";
+import { encryptAndUpload } from "../../lib/attachments";
+import { Avatar } from "../../components/ui/avatar";
+import { Badge } from "../../components/ui/badge";
+import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
 import { SecurityBanner } from "../../components/security-banner";
 import { Watermark } from "../../components/watermark";
+import { AttachmentBubble } from "./attachment-bubble";
+import { NewConversationDialog } from "./new-conv-dialog";
+import { SystemNotice } from "./system-notice";
+import {
+  displayTitle,
+  dmPeer,
+  formatHour,
+  formatWhen,
+} from "./chat-utils";
 
 interface MeResponse {
   user: {
@@ -40,7 +59,6 @@ interface MeResponse {
     displayName: string;
     email: string | null;
     role: "user" | "admin";
-    receivesSecurityAlerts: boolean;
   };
   device: {
     id: string;
@@ -50,16 +68,12 @@ interface MeResponse {
   };
 }
 
+type RenderStatus = "ok" | "legacy" | "no_envelope" | "decrypt_error" | "system";
+
 interface RenderedMessage extends Message {
   plaintext: string | null;
-  /**
-   * 'ok' | 'legacy' (texto plano Fase 3) | 'no_envelope' | 'decrypt_error'
-   * | 'system' (aviso de evento, no-E2EE, visible a todos)
-   */
-  status: "ok" | "legacy" | "no_envelope" | "decrypt_error" | "system";
-  /** Parsed payload cuando contentType === ATTACHMENT_CONTENT_TYPE. */
+  status: RenderStatus;
   attachment?: AttachmentPayload;
-  /** Parsed event cuando contentType === SYSTEM_CONTENT_TYPE. */
   systemEvent?: SystemEvent;
 }
 
@@ -73,6 +87,7 @@ export default function ChatPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<RenderedMessage[]>([]);
   const [draft, setDraft] = useState("");
+  const [convQuery, setConvQuery] = useState("");
   const [showNew, setShowNew] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -80,9 +95,7 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  /** Cache de claves públicas por deviceId (para descifrar mensajes entrantes
-   *  y cifrar los salientes). Se refresca al entrar a una conversación. */
+  const selectedIdRef = useRef<string | null>(null);
   const deviceKeysRef = useRef<DeviceKeyMap>({});
 
   const selectedConv = useMemo(
@@ -90,9 +103,22 @@ export default function ChatPage() {
     [conversations, selectedId],
   );
 
+  const filteredConvs = useMemo(() => {
+    const q = convQuery.trim().toLowerCase();
+    if (!q || !me) return conversations;
+    return conversations.filter((c) => {
+      const title = displayTitle(c, me.user.id).toLowerCase();
+      const peer = dmPeer(c, me.user.id);
+      return (
+        title.includes(q) ||
+        (peer && peer.username.toLowerCase().includes(q))
+      );
+    });
+  }, [conversations, convQuery, me]);
+
+  // ---------------- Decrypt helper ----------------
   const decryptMessage = useCallback(
     async (msg: Message, kp: IdentityKeypair): Promise<RenderedMessage> => {
-      // Mensajes de sistema: content en plaintext, no E2EE, visible a todos.
       if (msg.contentType === SYSTEM_CONTENT_TYPE && msg.content !== null) {
         try {
           const ev = JSON.parse(msg.content) as SystemEvent;
@@ -146,7 +172,7 @@ export default function ChatPage() {
     deviceKeysRef.current = { ...deviceKeysRef.current, ...map };
   }, []);
 
-  // Bootstrap: sesión + me + keypair + conversaciones + socket
+  // ---------------- Bootstrap ----------------
   useEffect(() => {
     if (!loadSession()) {
       router.replace("/login");
@@ -170,19 +196,15 @@ export default function ChatPage() {
         setLoading(false);
       }
     })();
-
-    return () => {
-      closeSocket();
-    };
+    return () => closeSocket();
   }, [router, refreshConversations]);
 
-  // Socket: escucha mensajes y conversaciones nuevas
+  // ---------------- Socket listeners ----------------
   useEffect(() => {
     if (!me || !myKeypair) return;
     const socket = getSocket();
 
     const onNew = async (msg: Message) => {
-      // Si el sender no está en cache, refresca las device-keys.
       if (!deviceKeysRef.current[msg.senderDeviceId]) {
         try {
           await refreshDeviceKeys(msg.conversationId);
@@ -233,13 +255,11 @@ export default function ChatPage() {
     };
   }, [me, myKeypair, decryptMessage, refreshDeviceKeys]);
 
-  // Mantiene ref con selectedId para handlers del socket
-  const selectedIdRef = useRef<string | null>(null);
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
-  // Carga mensajes + device keys al cambiar de conversación
+  // ---------------- Carga mensajes al cambiar conv ----------------
   useEffect(() => {
     if (!selectedId || !myKeypair) {
       setMessages([]);
@@ -274,17 +294,12 @@ export default function ChatPage() {
     });
   }, [messages]);
 
-  /**
-   * Cifra un plaintext (bytes) y lo envía al server. Hace el fan-out por
-   * dispositivo destinatario y la inserción optimista local.
-   */
+  // ---------------- Encrypt + send ----------------
   const sendEncrypted = useCallback(
     async (params: {
       plaintextBytes: Uint8Array;
       contentType: string;
-      /** Plaintext que la UI conoce para mostrar sin descifrar. */
       localPlaintext: string;
-      /** Payload de adjunto ya parseado (si aplica) para render optimista. */
       attachment?: AttachmentPayload;
     }): Promise<void> => {
       if (!selectedId || !myKeypair) throw new Error("no_conversation");
@@ -369,9 +384,8 @@ export default function ChatPage() {
 
   async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    e.target.value = ""; // permite re-seleccionar el mismo archivo luego
+    e.target.value = "";
     if (!file || !selectedId || !myKeypair) return;
-
     setUploading(true);
     setError(null);
     try {
@@ -393,9 +407,7 @@ export default function ChatPage() {
         attachment: payload,
       });
     } catch (err) {
-      setError(
-        err instanceof Error ? `Subida falló: ${err.message}` : "upload_failed",
-      );
+      setError(err instanceof Error ? `Subida falló: ${err.message}` : "upload_failed");
     } finally {
       setUploading(false);
     }
@@ -411,457 +423,406 @@ export default function ChatPage() {
     router.replace("/login");
   }
 
+  // ---------------- Loading / error states ----------------
   if (loading) {
     return (
-      <main className="shell">
-        <p className="tagline">Cargando chat…</p>
+      <main className="flex min-h-screen items-center justify-center bg-background">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
       </main>
     );
   }
   if (error || !me) {
     return (
-      <main className="shell">
-        <h1>Sesión inválida</h1>
-        <p className="error">{error ?? "no autenticado"}</p>
-        <a href="/login">Volver a iniciar sesión</a>
+      <main className="flex min-h-screen items-center justify-center bg-background px-6">
+        <div className="text-center">
+          <h1 className="text-xl font-semibold">Sesión inválida</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {error ?? "No autenticado."}
+          </p>
+          <Button asChild className="mt-4">
+            <a href="/login">Volver a iniciar sesión</a>
+          </Button>
+        </div>
       </main>
     );
   }
 
   return (
-    <div className="chat-root" data-view={selectedId ? "detail" : "list"}>
-      <aside className="chat-sidebar">
-        <header className="chat-sidebar-header">
-          <div>
-            <strong>{me.user.displayName}</strong>
-            <span className="muted">@{me.user.username}</span>
+    <div
+      className="grid h-screen w-screen bg-background md:grid-cols-[340px_1fr]"
+      data-view={selectedId ? "detail" : "list"}
+    >
+      {/* ============== SIDEBAR ============== */}
+      <aside
+        className={[
+          "flex h-screen flex-col border-r border-border bg-card",
+          selectedId ? "hidden md:flex" : "flex",
+        ].join(" ")}
+      >
+        {/* Header sidebar: usuario actual */}
+        <div className="flex items-center gap-3 border-b border-border px-4 py-3">
+          <Avatar
+            size="md"
+            username={me.user.username}
+            displayName={me.user.displayName}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="truncate text-sm font-semibold">
+                {me.user.displayName}
+              </span>
+              {me.user.role === "admin" && (
+                <Badge variant="default" className="shrink-0 px-1.5 py-0 text-[10px]">
+                  admin
+                </Badge>
+              )}
+            </div>
+            <div className="truncate text-xs text-muted-foreground">
+              @{me.user.username}
+            </div>
           </div>
-          <div className="actions">
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => setShowNew(true)}
-            >
-              + Nueva
-            </button>
-            <button type="button" className="secondary" onClick={onLogout}>
-              Salir
-            </button>
-          </div>
-        </header>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onLogout}
+            title="Cerrar sesión"
+          >
+            <LogOut className="size-4" />
+          </Button>
+        </div>
 
-        <ul className="conv-list">
-          {conversations.length === 0 && (
-            <li className="empty">
-              No tienes conversaciones todavía. Usa <strong>+ Nueva</strong>.
-            </li>
+        {/* Search + new */}
+        <div className="space-y-2 border-b border-border px-3 py-3">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={convQuery}
+              onChange={(e) => setConvQuery(e.target.value)}
+              placeholder="Buscar conversación…"
+              className="pl-9 h-9 text-sm"
+            />
+          </div>
+          <Button
+            type="button"
+            onClick={() => setShowNew(true)}
+            size="sm"
+            className="w-full"
+          >
+            <Plus className="size-4" />
+            Nueva conversación
+          </Button>
+        </div>
+
+        {/* Lista */}
+        <div className="flex-1 overflow-y-auto py-1">
+          {filteredConvs.length === 0 && (
+            <p className="px-4 py-8 text-center text-xs text-muted-foreground">
+              {conversations.length === 0
+                ? "Aún no tienes conversaciones. Crea una con el botón de arriba."
+                : "Ninguna conversación coincide."}
+            </p>
           )}
-          {conversations.map((conv) => (
-            <li
-              key={conv.id}
-              className={selectedId === conv.id ? "selected" : ""}
-              onClick={() => setSelectedId(conv.id)}
-            >
-              <div className="conv-title">
-                {displayTitle(conv, me.user.id)}
-                {conv.unreadCount > 0 && (
-                  <span className="badge">{conv.unreadCount}</span>
-                )}
-              </div>
-              <div className="conv-preview">
-                {conv.lastMessage
-                  ? (conv.lastMessage.content ?? "🔒 mensaje cifrado")
-                  : "(sin mensajes)"}
-              </div>
-            </li>
-          ))}
-        </ul>
+          {filteredConvs.map((conv) => {
+            const peer = dmPeer(conv, me.user.id);
+            const isActive = selectedId === conv.id;
+            const unread = conv.unreadCount > 0;
+            return (
+              <button
+                key={conv.id}
+                type="button"
+                onClick={() => setSelectedId(conv.id)}
+                className={[
+                  "flex w-full items-center gap-3 px-3 py-2 text-left transition-colors",
+                  isActive
+                    ? "bg-primary/10 ring-inset ring-1 ring-primary/25"
+                    : "hover:bg-secondary/50",
+                ].join(" ")}
+              >
+                <Avatar
+                  size="md"
+                  username={peer?.username ?? conv.name ?? conv.id}
+                  displayName={peer?.displayName ?? conv.name ?? "Grupo"}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span
+                      className={[
+                        "truncate text-sm",
+                        unread ? "font-semibold" : "font-medium",
+                      ].join(" ")}
+                    >
+                      {displayTitle(conv, me.user.id)}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                      {formatWhen(conv.lastMessage?.createdAt ?? conv.updatedAt)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={[
+                        "truncate text-xs",
+                        unread ? "text-foreground" : "text-muted-foreground",
+                      ].join(" ")}
+                    >
+                      {conv.lastMessage
+                        ? (conv.lastMessage.content ?? "🔒 mensaje cifrado")
+                        : "(sin mensajes)"}
+                    </span>
+                    {unread && (
+                      <Badge variant="default" className="shrink-0 px-1.5 py-0 text-[10px]">
+                        {conv.unreadCount}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Footer sidebar: device info */}
+        <div className="flex items-center gap-2 border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
+          <Sparkles className="size-3 text-primary" />
+          <span className="truncate">
+            {me.device.deviceName} · E2EE activo
+          </span>
+        </div>
       </aside>
 
-      <section className="chat-main">
+      {/* ============== MAIN ============== */}
+      <section
+        className={[
+          "flex h-screen min-w-0 flex-col bg-background",
+          selectedId ? "flex" : "hidden md:flex",
+        ].join(" ")}
+      >
         {selectedConv ? (
           <>
-            <header className="chat-main-header">
-              <h2>
-                <button
-                  type="button"
-                  className="back-btn"
-                  onClick={() => setSelectedId(null)}
-                  aria-label="Volver"
-                >
-                  ←
-                </button>
-                <span className="lock" title="Cifrado de extremo a extremo">
-                  🔒
-                </span>{" "}
-                {displayTitle(selectedConv, me.user.id)}
-              </h2>
-              <p className="muted">
-                {selectedConv.type === "group"
-                  ? `${selectedConv.members.length} miembros`
-                  : selectedConv.members
-                      .filter((m) => m.userId !== me.user.id)
-                      .map((m) => `@${m.username}`)
-                      .join(", ")}
-              </p>
+            {/* Header */}
+            <header className="flex items-center gap-3 border-b border-border bg-card px-4 py-3">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setSelectedId(null)}
+                className="md:hidden"
+                aria-label="Volver"
+              >
+                <ArrowLeft className="size-4" />
+              </Button>
+              <Avatar
+                size="md"
+                username={
+                  dmPeer(selectedConv, me.user.id)?.username ??
+                  selectedConv.name ??
+                  selectedConv.id
+                }
+                displayName={displayTitle(selectedConv, me.user.id)}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 text-sm font-semibold">
+                  <Lock className="size-3.5 text-primary" />
+                  <span className="truncate">
+                    {displayTitle(selectedConv, me.user.id)}
+                  </span>
+                </div>
+                <div className="truncate text-xs text-muted-foreground">
+                  {selectedConv.type === "group"
+                    ? `${selectedConv.members.length} miembros`
+                    : selectedConv.members
+                        .filter((m) => m.userId !== me.user.id)
+                        .map((m) => `@${m.username}`)
+                        .join(", ")}
+                </div>
+              </div>
             </header>
 
             <SecurityBanner conversationId={selectedConv.id} />
 
-            <div ref={scrollRef} className="messages">
+            {/* Messages */}
+            <div
+              ref={scrollRef}
+              className="relative flex-1 overflow-y-auto px-4 py-4"
+            >
               <Watermark username={me.user.username} />
-              {messages.map((msg) => {
-                // Avisos de sistema: centrados, sin bubble, sin sender.
-                if (msg.status === "system" && msg.systemEvent) {
-                  return (
-                    <SystemNotice
-                      key={msg.id}
-                      ev={msg.systemEvent}
-                      createdAt={msg.createdAt}
-                    />
-                  );
-                }
 
-                const mine = msg.senderUserId === me.user.id;
-                const sender = selectedConv.members.find(
-                  (m) => m.userId === msg.senderUserId,
-                );
-                return (
-                  <div
-                    key={msg.id}
-                    className={`bubble ${mine ? "mine" : "theirs"}`}
-                  >
-                    {!mine && selectedConv.type === "group" && (
-                      <div className="bubble-sender">
-                        {sender?.displayName ?? "?"}
+              <div className="relative z-[2] space-y-1">
+                {messages.map((msg) => {
+                  if (msg.status === "system" && msg.systemEvent) {
+                    return (
+                      <SystemNotice
+                        key={msg.id}
+                        ev={msg.systemEvent}
+                        createdAt={msg.createdAt}
+                      />
+                    );
+                  }
+                  const mine = msg.senderUserId === me.user.id;
+                  const sender = selectedConv.members.find(
+                    (m) => m.userId === msg.senderUserId,
+                  );
+                  return (
+                    <div
+                      key={msg.id}
+                      className={[
+                        "flex gap-2",
+                        mine ? "justify-end" : "justify-start",
+                      ].join(" ")}
+                    >
+                      {!mine && selectedConv.type === "group" && (
+                        <Avatar
+                          size="xs"
+                          username={sender?.username ?? "?"}
+                          displayName={sender?.displayName ?? "?"}
+                          className="mt-1"
+                        />
+                      )}
+                      <div
+                        className={[
+                          "max-w-[80%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed shadow-sm md:max-w-[65%]",
+                          mine
+                            ? "rounded-br-sm bg-primary text-primary-foreground"
+                            : "rounded-bl-sm bg-card text-card-foreground ring-1 ring-border",
+                        ].join(" ")}
+                      >
+                        {!mine && selectedConv.type === "group" && (
+                          <div className="mb-0.5 text-[11px] font-semibold text-primary">
+                            {sender?.displayName ?? "?"}
+                          </div>
+                        )}
+                        <MessageBody msg={msg} mine={mine} />
+                        <div
+                          className={[
+                            "mt-1 text-right text-[10px]",
+                            mine ? "text-primary-foreground/70" : "text-muted-foreground",
+                          ].join(" ")}
+                        >
+                          {formatHour(msg.createdAt)}
+                        </div>
                       </div>
-                    )}
-                    <div className="bubble-text">
-                      {msg.status === "ok" && msg.attachment && (
-                        <AttachmentBubble att={msg.attachment} />
-                      )}
-                      {msg.status === "ok" && !msg.attachment && msg.plaintext}
-                      {msg.status === "legacy" && (
-                        <>
-                          <span className="warn-inline">📜 sin cifrar</span>{" "}
-                          {msg.plaintext}
-                        </>
-                      )}
-                      {msg.status === "no_envelope" && (
-                        <em>🔒 este dispositivo no puede descifrar este mensaje</em>
-                      )}
-                      {msg.status === "decrypt_error" && (
-                        <em>⚠️ error al descifrar</em>
-                      )}
                     </div>
-                    <div className="bubble-time">
-                      {new Date(msg.createdAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
 
-            <form className="composer" onSubmit={onSend}>
-              <input
-                ref={fileInputRef}
-                type="file"
-                onChange={onPickFile}
-                style={{ display: "none" }}
-              />
-              <button
-                type="button"
-                className="attach-btn"
-                title="Adjuntar archivo"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading || sending}
-              >
-                📎
-              </button>
-              <input
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder={
-                  uploading ? "Cifrando y subiendo…" : "Escribe un mensaje cifrado…"
-                }
-                disabled={sending || uploading}
-                autoFocus
-              />
-              <button
-                type="submit"
-                disabled={sending || uploading || !draft.trim()}
-              >
-                {sending ? "…" : "Enviar"}
-              </button>
+            {/* Composer */}
+            <form
+              onSubmit={onSend}
+              className="border-t border-border bg-card px-3 py-3"
+            >
+              {error && (
+                <div className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
+                  {error}{" "}
+                  <button
+                    type="button"
+                    onClick={() => setError(null)}
+                    className="ml-1 font-medium underline"
+                  >
+                    cerrar
+                  </button>
+                </div>
+              )}
+              <div className="flex items-end gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  onChange={onPickFile}
+                  className="hidden"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading || sending}
+                  title="Adjuntar archivo"
+                >
+                  {uploading ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Paperclip className="size-4" />
+                  )}
+                </Button>
+                <Input
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  placeholder={
+                    uploading
+                      ? "Cifrando y subiendo…"
+                      : "Escribe un mensaje cifrado…"
+                  }
+                  disabled={sending || uploading}
+                  className="h-10 rounded-full px-4"
+                  autoFocus
+                />
+                <Button
+                  type="submit"
+                  size="icon"
+                  disabled={sending || uploading || !draft.trim()}
+                  title="Enviar"
+                  className="rounded-full"
+                >
+                  {sending ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Send className="size-4" />
+                  )}
+                </Button>
+              </div>
             </form>
           </>
         ) : (
-          <div className="empty-main">
-            <p>Selecciona una conversación o crea una nueva.</p>
+          <div className="flex flex-1 items-center justify-center px-6">
+            <div className="max-w-sm text-center">
+              <div className="mx-auto mb-4 flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                <Lock className="size-6" />
+              </div>
+              <h2 className="text-lg font-semibold">
+                Selecciona una conversación
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                O crea una nueva desde el botón <strong>+ Nueva conversación</strong>{" "}
+                en la barra lateral.
+              </p>
+            </div>
           </div>
         )}
       </section>
 
-      {showNew && (
-        <NewConversationDialog
-          currentUserId={me.user.id}
-          onClose={() => setShowNew(false)}
-          onCreated={async (convId) => {
-            setShowNew(false);
-            await refreshConversations();
-            setSelectedId(convId);
-          }}
-        />
-      )}
+      <NewConversationDialog
+        open={showNew}
+        onOpenChange={setShowNew}
+        currentUserId={me.user.id}
+        onCreated={async (convId) => {
+          setShowNew(false);
+          await refreshConversations();
+          setSelectedId(convId);
+        }}
+      />
     </div>
   );
 }
 
-function displayTitle(conv: Conversation, meId: string): string {
-  if (conv.type === "group") return conv.name ?? "Grupo";
-  const other = conv.members.find((m) => m.userId !== meId);
-  return other ? other.displayName : "(solo tú)";
-}
-
-function fileIconFor(mime: string): string {
-  if (mime.startsWith("image/")) return "🖼️";
-  if (mime.startsWith("video/")) return "🎬";
-  if (mime.startsWith("audio/")) return "🎵";
-  if (mime === "application/pdf") return "📕";
-  if (mime.includes("spreadsheet") || mime.includes("excel")) return "📊";
-  if (mime.includes("word") || mime.includes("document")) return "📝";
-  if (mime.includes("zip") || mime.includes("compressed")) return "🗜️";
-  return "📎";
-}
-
-function SystemNotice({ ev, createdAt }: { ev: SystemEvent; createdAt: string }) {
-  const time = new Date(createdAt).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-  let text: React.ReactNode = null;
-  if (ev.kind === "attachment_downloaded") {
-    text = (
-      <>
-        📥 <strong>{ev.actor.displayName}</strong> descargó{" "}
-        <em>&ldquo;{ev.target.fileName}&rdquo;</em>
-      </>
-    );
-  } else if (ev.kind === "conversation_created") {
-    text = (
-      <>
-        🆕 <strong>{ev.actor.displayName}</strong> creó{" "}
-        {ev.conversationType === "group" ? "el grupo" : "esta conversación"}{" "}
-        con {ev.memberUserIds.length} miembros
-      </>
-    );
-  } else if (ev.kind === "member_added") {
-    const names = ev.addedMembers.map((m) => m.displayName).join(", ");
-    text = (
-      <>
-        ➕ <strong>{ev.actor.displayName}</strong> agregó a{" "}
-        <strong>{names}</strong>
-      </>
+function MessageBody({ msg, mine }: { msg: RenderedMessage; mine: boolean }) {
+  if (msg.status === "ok" && msg.attachment) {
+    return <AttachmentBubble att={msg.attachment} mine={mine} />;
+  }
+  if (msg.status === "ok") {
+    return <span className="whitespace-pre-wrap">{msg.plaintext}</span>;
+  }
+  if (msg.status === "legacy") {
+    return (
+      <span className="italic opacity-80">
+        📜 (sin cifrar · Fase 3) {msg.plaintext}
+      </span>
     );
   }
-
-  if (!text) return null;
-
-  return (
-    <div className="system-notice">
-      <span className="system-notice-body">{text}</span>
-      <span className="system-notice-time">{time}</span>
-    </div>
-  );
-}
-
-function AttachmentBubble({ att }: { att: AttachmentPayload }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  async function onDownload() {
-    setErr(null);
-    setBusy(true);
-    try {
-      await downloadFileToUser({
-        attachmentId: att.attachmentId,
-        fileKey: att.fileKey,
-        fileIv: att.fileIv,
-        fileName: att.fileName,
-        mime: att.mime,
-        byteSize: att.byteSize,
-      });
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "download_failed");
-    } finally {
-      setBusy(false);
-    }
+  if (msg.status === "no_envelope") {
+    return (
+      <em className="opacity-80">
+        🔒 este dispositivo no puede descifrar este mensaje
+      </em>
+    );
   }
-
-  return (
-    <div className="attachment">
-      <span className="attachment-icon">{fileIconFor(att.mime)}</span>
-      <div className="attachment-meta">
-        <div className="attachment-name" title={att.fileName}>
-          {att.fileName}
-        </div>
-        <div className="attachment-size">{formatBytes(att.byteSize)}</div>
-      </div>
-      <button
-        type="button"
-        className="attachment-dl"
-        onClick={onDownload}
-        disabled={busy}
-        title="Descargar y descifrar"
-      >
-        {busy ? "…" : "⬇"}
-      </button>
-      {err && <div className="attachment-err">Error: {err}</div>}
-    </div>
-  );
-}
-
-function NewConversationDialog({
-  currentUserId,
-  onClose,
-  onCreated,
-}: {
-  currentUserId: string;
-  onClose: () => void;
-  onCreated: (convId: string) => void;
-}) {
-  const [users, setUsers] = useState<UserListItem[]>([]);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [type, setType] = useState<"dm" | "group">("dm");
-  const [name, setName] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    api<{ users: UserListItem[] }>("/users", { method: "GET", auth: true })
-      .then((r) => setUsers(r.users))
-      .catch((e) => setErr(e instanceof Error ? e.message : "error"));
-  }, []);
-
-  function toggle(id: string) {
-    setSelected((prev) => {
-      const n = new Set(prev);
-      if (n.has(id)) n.delete(id);
-      else {
-        if (type === "dm") n.clear();
-        n.add(id);
-      }
-      return n;
-    });
-  }
-
-  async function onCreate() {
-    setErr(null);
-    setBusy(true);
-    try {
-      if (type === "dm" && selected.size !== 1) {
-        throw new Error("Selecciona exactamente un usuario para DM");
-      }
-      if (type === "group" && !name.trim()) {
-        throw new Error("El grupo necesita un nombre");
-      }
-      if (selected.size === 0) {
-        throw new Error("Selecciona al menos un miembro");
-      }
-      const res = await api<Conversation>("/conversations", {
-        auth: true,
-        body: {
-          type,
-          name: type === "group" ? name.trim() : undefined,
-          memberUserIds: Array.from(selected),
-        },
-      });
-      onCreated(res.id);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <header>
-          <h3>Nueva conversación</h3>
-          <button type="button" className="secondary" onClick={onClose}>
-            Cerrar
-          </button>
-        </header>
-
-        <div className="tabs">
-          <button
-            type="button"
-            className={type === "dm" ? "active" : ""}
-            onClick={() => {
-              setType("dm");
-              setSelected(new Set());
-            }}
-          >
-            Directo (1-a-1)
-          </button>
-          <button
-            type="button"
-            className={type === "group" ? "active" : ""}
-            onClick={() => setType("group")}
-          >
-            Grupo
-          </button>
-        </div>
-
-        {type === "group" && (
-          <label>
-            <span>Nombre del grupo</span>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Contabilidad, Proyectos 2026…"
-            />
-          </label>
-        )}
-
-        <div className="user-list">
-          {users.length === 0 && (
-            <p className="muted">
-              No hay otros usuarios todavía. Emite invitaciones desde el
-              panel admin.
-            </p>
-          )}
-          {users
-            .filter((u) => u.id !== currentUserId)
-            .map((u) => (
-              <label key={u.id} className="user-row">
-                <input
-                  type={type === "dm" ? "radio" : "checkbox"}
-                  name="member"
-                  checked={selected.has(u.id)}
-                  onChange={() => toggle(u.id)}
-                />
-                <span>
-                  <strong>{u.displayName}</strong>{" "}
-                  <span className="muted">@{u.username}</span>
-                </span>
-              </label>
-            ))}
-        </div>
-
-        {err && <p className="error">Error: {err}</p>}
-
-        <footer>
-          <button type="button" onClick={onCreate} disabled={busy}>
-            {busy ? "Creando…" : "Crear"}
-          </button>
-        </footer>
-      </div>
-    </div>
-  );
+  return <em className="opacity-80">⚠ error al descifrar</em>;
 }
