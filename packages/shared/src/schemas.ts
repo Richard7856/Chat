@@ -69,14 +69,16 @@ export const EnrollBeginRequestSchema = z.object({
 export type EnrollBeginRequest = z.infer<typeof EnrollBeginRequestSchema>;
 
 export const EnrollBeginResponseSchema = z.object({
-  enrollmentId: z.string().uuid(),
+  // enrollmentId es un JWT opaco firmado por el server (no un UUID).
+  // Lleva los claims del enrollment y se vuelve a verificar en /complete.
+  enrollmentId: z.string().min(1),
   totpUri: z.string(),
   totpQrDataUrl: z.string(),
 });
 export type EnrollBeginResponse = z.infer<typeof EnrollBeginResponseSchema>;
 
 export const EnrollCompleteRequestSchema = z.object({
-  enrollmentId: z.string().uuid(),
+  enrollmentId: z.string().min(1),
   password: PasswordSchema,
   totpToken: TotpTokenSchema,
   deviceName: z.string().min(1).max(64),

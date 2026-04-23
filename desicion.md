@@ -198,6 +198,35 @@ pide:
 
 ## Historial de decisiones
 
+### [2026-04-23] Fase 10.1 — Fix: enrollmentId rechazado por schema (UUID vs JWT)
+
+- **Síntoma:** crear cuenta vía invitación siempre fallaba con
+  "Revisa los datos — alguno no es válido." (error code `invalid_body`)
+  aunque todos los campos del formulario fueran válidos.
+- **Causa raíz:** `EnrollCompleteRequestSchema.enrollmentId` (y
+  `EnrollBeginResponseSchema.enrollmentId`) en `packages/shared/src/schemas.ts`
+  estaban definidos como `z.string().uuid()`. Pero el server emite el
+  `enrollmentId` como **JWT firmado** (`app.jwt.sign(claims, ...)` en
+  `apps/api/src/routes/auth.ts:137`). Un JWT no es UUID, así que `safeParse`
+  rechazaba CADA request a `/auth/enroll/complete` antes de siquiera
+  intentar verificar el JWT con `app.jwt.verify`.
+- **Impacto:** combinado con el bug de `randomBytes(10)` arreglado en M0,
+  el flujo invitación → enrollment **nunca funcionó end-to-end** desde
+  Fase 2. Por eso el único admin se creó con el script `create-admin.ts`
+  y nunca se logró canjear una invitación real.
+- **Fix:** schemas a `z.string().min(1)` con comentario explicativo. El
+  JWT igual se valida en runtime con `app.jwt.verify` (línea 160 de
+  auth.ts), que es donde la verificación criptográfica corresponde.
+- **Test de regresión:** `packages/shared/src/schemas.test.ts` (7 tests
+  nuevos): cubre el formato canónico de InviteCode, rechazo del formato
+  corto histórico (XXXX-XXXX-XX-), y aceptación de JWT-like strings en
+  ambos schemas de enrollment + validación cruzada de password/totp/platform.
+- **Lección:** los schemas de Zod compartidos entre cliente y server son
+  un buen punto de control, pero se desincronizan sutilmente del código
+  productor cuando éste evoluciona. Fix preventivo: en M1 agregaremos un
+  test de "round-trip de contrato" que simule el cuerpo real producido
+  por cada endpoint y lo pase por su schema.
+
 ### [2026-04-23] Fase 10 — Red de seguridad: Vitest + CI + Dependabot (M0 del roadmap nuevo)
 
 - **Qué se decidió:** antes de tocar auth (M1) y Signal Protocol (M2), meter
