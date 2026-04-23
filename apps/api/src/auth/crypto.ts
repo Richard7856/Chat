@@ -29,7 +29,10 @@ export async function verifyPassword(hash: string, plain: string): Promise<boole
 const BASE32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 export function generateInviteCode(): string {
-  const buf = randomBytes(10);
+  // 16 chars base32 = ~80 bits de entropía (1 char = log2(32) = 5 bits).
+  // randomBytes(16) da el sesgo más bajo posible al mapear a un alfabeto de 32
+  // (256 % 32 == 0 → no hay sesgo modular).
+  const buf = randomBytes(16);
   let out = "";
   for (let i = 0; i < buf.length; i++) {
     out += BASE32[buf[i]! % 32];

@@ -115,18 +115,30 @@ sudo systemctl start euromex-backup.service
 
 ## Estado actual
 
-- **Fase:** 9 — Panel admin web (usuarios, invitaciones, audit log) ✅
-- **Estado:** producción corriendo + features post-plan en expansión
-  continua (Fase 8.1 avisos de seguridad, 8.2 super admin, 9 panel admin).
-- **Última actualización:** 2026-04-19
-- **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
+- **Fase:** 10 — Red de seguridad (tests + CI + Dependabot) ✅
+- **Estado:** producción corriendo + red de seguridad activa. Listos para
+  arrancar el roadmap nuevo (M1 auth production-grade → M2 Signal Protocol).
+- **Última actualización:** 2026-04-23
+- **Branch activa:** `claude/review-project-status-0S5zc`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
-- **Fases futuras sugeridas (no obligatorias):**
-  - 10: organigrama + campos de perfil extendido (job_title, department,
-    manager_user_id).
-  - 11: SSO / integración con herramientas externas (dashboard financiero,
-    Bitwarden, etc.) vía JWT firmados.
-  - 12: edición de perfil completo desde admin UI (email, displayName).
+- **Roadmap activo (acordado 2026-04-23):**
+  - **M0 — Red de seguridad** ✅ Vitest + 27 tests (crypto + auth) +
+    GitHub Actions + Dependabot.
+  - **M1 — Auth production-grade** (siguiente): cookies httpOnly, refresh
+    tokens rotativos con reuse detection, `/app/account`, self-service de
+    devices.
+  - **M2 — E2EE con Signal Protocol**: libsignal, prekey bundles, Double
+    Ratchet, safety numbers UI. Mensajes actuales quedan archivados como
+    histórico pre-Signal.
+  - **M3** — UX mensajería (read receipts, edit/delete, reacciones, replies,
+    @menciones, búsqueda).
+  - **M4** — Adjuntos pulidos (thumbnails, preview, voice notes, cuotas).
+  - **M5** — Web Push (VAPID, payload cifrado).
+  - **M6** — Mobile RN/Expo (opcional; PWA cubre hoy el uso real).
+  - **M7** — Admin avanzado (métricas, políticas, export firmado audit).
+  - **M8** — Hardening prod (dominio real, mTLS admin, rate-limit audit,
+    monitoring, pentest ZAP).
+  - **M9** — Docs (threat model, C4 diagrams, onboarding usuario).
 
 ### Producción actual (VPS Hostinger, 148.230.82.52)
 
@@ -185,6 +197,59 @@ pide:
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-04-23] Fase 10 — Red de seguridad: Vitest + CI + Dependabot (M0 del roadmap nuevo)
+
+- **Qué se decidió:** antes de tocar auth (M1) y Signal Protocol (M2), meter
+  una red de seguridad que impida que una refactor rompa crypto o auth sin
+  que nos enteremos.
+- **Por qué antes que nada:** "crypto sin tests es como cableado eléctrico
+  sin revisar continuidad" — los bugs de crypto son invisibles hasta que es
+  tarde (nonce reutilizado, MAC bypass, key confusion). Para alguien que
+  aprende seguridad, escribir tests sobre el NaCl actual enseña el modelo
+  **antes** de reescribirlo con libsignal.
+- **Impacto:**
+  - `packages/crypto/vitest.config.ts` + `src/index.test.ts`: 9 tests que
+    cubren roundtrip, nonces únicos en 1000 iteraciones, tamper detection
+    (Poly1305 MAC), key separation (llave errónea no descifra), emisor
+    falso rechazado, roundtrip base64 sin mutación, y safety numbers
+    (determinismo, simetría A+B=B+A, cambio al cambiar identidad, formato).
+  - `apps/api/vitest.config.ts` + `src/auth/crypto.test.ts` (14 tests):
+    password hashing Argon2id (correcto/incorrecto/salts distintos/hash
+    corrupto), invite codes (formato, unicidad en 1000, roundtrip),
+    AES-256-GCM para secretos (roundtrip, nonce único, auth tag rechaza
+    tamper, llave distinta no descifra, loadMasterKey valida 32 bytes),
+    constantTimeEqual.
+  - `apps/api/src/auth/totp.test.ts` (4 tests): enrollment produce
+    secret/uri/QR, verify acepta código actual, rechaza aleatorios y
+    rechaza entrada mal formada.
+  - `.github/workflows/ci.yml`: CI corre `pnpm typecheck` + `pnpm test` en
+    cada push a `main` y cada PR. `concurrency` cancela runs obsoletos.
+  - `.github/dependabot.yml`: semanal para npm (agrupando minor/patch) y
+    mensual para github-actions.
+  - `package.json` root + `packages/crypto/package.json` +
+    `apps/api/package.json`: Vitest 2.1.8 como devDep.
+- **Bug real encontrado por los tests:** `generateInviteCode()` usaba
+  `randomBytes(10)` y pretendía devolver 16 chars base32 (4 grupos de 4).
+  El resultado real era `XXXX-XXXX-XX-` (10 chars, termina con guión
+  colgado, ~50 bits de entropía en vez de los 80 documentados). Fix:
+  `randomBytes(16)`. Los hashes existentes en DB no se ven afectados —
+  argon2 verifica cualquier string contra su hash.
+- **Qué NO entró (consciente):**
+  - Playwright: los tests E2E requieren levantar Postgres + Redis + API +
+    Next en el runner. Vale la pena, pero se posterga a una iteración
+    siguiente para no demorar M1. Lo agregaremos con un smoke test
+    (login → enviar mensaje → releer) antes de arrancar M2.
+  - Tests de rutas que tocan DB (jwt.ts, chat/repo.ts, admin/repo.ts): se
+    agregarán conforme refactoremos en M1/M2 con testcontainers o un
+    Postgres embebido. Por ahora CI corre solo unitarios puros.
+  - Cobertura mínima: no forzamos umbral todavía. Primero aprendemos qué
+    es razonable; después se puede meter `--coverage` con mínimo, p.ej.,
+    80% en `packages/crypto`.
+- **Convención nueva:** cada refactor de M1+ que toque crypto o auth **debe
+  ampliar los tests primero** (TDD ligero). Si un test existente se vuelve
+  obsoleto por el cambio, se reescribe explícitamente en el mismo commit,
+  no se borra silenciosamente.
 
 ### [2026-04-19] Fase 9 — Panel admin web (usuarios, invitaciones, audit)
 
