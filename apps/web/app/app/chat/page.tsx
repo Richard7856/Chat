@@ -11,6 +11,7 @@ import {
   Plus,
   Search,
   Send,
+  ShieldCheck,
   Sparkles,
 } from "lucide-react";
 import type {
@@ -485,6 +486,13 @@ export default function ChatPage() {
               @{me.user.username}
             </div>
           </div>
+          {me.user.role === "admin" && (
+            <Button asChild variant="ghost" size="icon" title="Panel admin">
+              <a href="/app/admin">
+                <ShieldCheck className="size-4" />
+              </a>
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"
