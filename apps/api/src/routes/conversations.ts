@@ -30,6 +30,7 @@ import {
   markConversationRead,
   publishDeviceIdentity,
 } from "../chat/repo.js";
+import { linkAttachmentToMessage } from "../chat/attachments-repo.js";
 import {
   broadcastConversationUpdated,
   broadcastSystemMessage,
@@ -254,6 +255,18 @@ export async function conversationRoutes(app: FastifyInstance) {
         contentType: parsed.data.contentType,
         envelopes,
       });
+
+      // Fase 14: si el mensaje referencia un adjunto, vincular message_id.
+      if (parsed.data.attachmentId) {
+        await linkAttachmentToMessage(
+          parsed.data.attachmentId,
+          res.messageId,
+          userId,
+        ).catch((err) => {
+          // Fallo no crítico: el adjunto se sube igual, solo queda sin link.
+          req.log.warn({ err, attachmentId: parsed.data.attachmentId }, "failed to link attachment to message");
+        });
+      }
 
       const io = app.io as
         | SocketIOServer<ClientToServerEvents, ServerToClientEvents>

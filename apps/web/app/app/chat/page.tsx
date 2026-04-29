@@ -4,6 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
+  CalendarDays,
+  ClipboardList,
+  CalendarPlus,
+  FolderOpen,
   Loader2,
   Lock,
   LogOut,
@@ -16,12 +20,18 @@ import {
 } from "lucide-react";
 import type {
   AttachmentPayload,
+  AttachmentRestrictedPayload,
   Conversation,
   DeviceKey,
   Message,
   SystemEvent,
 } from "@euromex/shared";
-import { ATTACHMENT_CONTENT_TYPE, SYSTEM_CONTENT_TYPE } from "@euromex/shared";
+import {
+  ACTIVITY_CONTENT_TYPE,
+  ATTACHMENT_CONTENT_TYPE,
+  SYSTEM_CONTENT_TYPE,
+  TASK_CONTENT_TYPE,
+} from "@euromex/shared";
 import {
   decodeUtf8,
   decryptFrom,
@@ -43,6 +53,12 @@ import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { SecurityBanner } from "../../components/security-banner";
 import { Watermark } from "../../components/watermark";
+import { AttachmentsPanel } from "../../components/attachments-panel";
+import { AttachmentOptionsModal } from "../../components/attachment-options-modal";
+import { ActivityCard } from "../../components/activity-card";
+import { TaskCard } from "../../components/task-card";
+import { CreateActivityModal } from "../../components/create-activity-modal";
+import { CreateTaskModal } from "../../components/create-task-modal";
 import { AttachmentBubble } from "./attachment-bubble";
 import { NewConversationDialog } from "./new-conv-dialog";
 import { SystemNotice } from "./system-notice";
@@ -69,12 +85,13 @@ interface MeResponse {
   };
 }
 
-type RenderStatus = "ok" | "legacy" | "no_envelope" | "decrypt_error" | "system";
+type RenderStatus = "ok" | "legacy" | "no_envelope" | "decrypt_error" | "system" | "restricted_attachment";
 
 interface RenderedMessage extends Message {
   plaintext: string | null;
   status: RenderStatus;
   attachment?: AttachmentPayload;
+  attachmentRestricted?: AttachmentRestrictedPayload;
   systemEvent?: SystemEvent;
 }
 
@@ -94,6 +111,10 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showDocsPanel, setShowDocsPanel] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [showActivityModal, setShowActivityModal] = useState(false);
+  const [showTaskModal, setShowTaskModal] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selectedIdRef = useRef<string | null>(null);
@@ -117,6 +138,16 @@ export default function ChatPage() {
     });
   }, [conversations, convQuery, me]);
 
+  // Cache de AttachmentPayloads de mensajes descifrados — usado por AttachmentsPanel
+  // para mostrar los nombres de archivo sin exponer las claves al server.
+  const attachmentCache = useMemo(() => {
+    const map = new Map<string, AttachmentPayload>();
+    for (const msg of messages) {
+      if (msg.attachment) map.set(msg.attachment.attachmentId, msg.attachment);
+    }
+    return map;
+  }, [messages]);
+
   // ---------------- Decrypt helper ----------------
   const decryptMessage = useCallback(
     async (msg: Message, kp: IdentityKeypair): Promise<RenderedMessage> => {
@@ -127,6 +158,13 @@ export default function ChatPage() {
         } catch {
           return { ...msg, plaintext: null, status: "decrypt_error" };
         }
+      }
+      // Activity/Task system messages are plaintext JSON (not E2EE envelopes)
+      if (
+        (msg.contentType === ACTIVITY_CONTENT_TYPE || msg.contentType === TASK_CONTENT_TYPE) &&
+        msg.content !== null
+      ) {
+        return { ...msg, plaintext: msg.content, status: "ok" };
       }
       if (msg.content !== null && msg.envelope === null) {
         return { ...msg, plaintext: msg.content, status: "legacy" };
@@ -143,11 +181,25 @@ export default function ChatPage() {
         const env = await envelopeFromBase64(msg.envelope);
         const pt = await decryptFrom(env, senderPub, kp.privateKey);
         const text = await decodeUtf8(pt);
-        const attachment =
-          msg.contentType === ATTACHMENT_CONTENT_TYPE
-            ? (JSON.parse(text) as AttachmentPayload)
-            : undefined;
-        return { ...msg, plaintext: text, status: "ok", attachment };
+
+        if (msg.contentType === ATTACHMENT_CONTENT_TYPE) {
+          const parsed = JSON.parse(text) as { kind: string };
+          if (parsed.kind === "attachment_restricted") {
+            return {
+              ...msg,
+              plaintext: text,
+              status: "restricted_attachment",
+              attachmentRestricted: parsed as AttachmentRestrictedPayload,
+            };
+          }
+          return {
+            ...msg,
+            plaintext: text,
+            status: "ok",
+            attachment: parsed as AttachmentPayload,
+          };
+        }
+        return { ...msg, plaintext: text, status: "ok" };
       } catch {
         return { ...msg, plaintext: null, status: "decrypt_error" };
       }
@@ -302,6 +354,16 @@ export default function ChatPage() {
       contentType: string;
       localPlaintext: string;
       attachment?: AttachmentPayload;
+      /**
+       * Fase 14: para adjuntos restringidos, este payload (sin fileKey/fileIv)
+       * se cifra para los dispositivos NO incluidos en allowedUserIds.
+       */
+      attachmentRestricted?: AttachmentRestrictedPayload;
+      /** Fase 14: user IDs con acceso completo (para split de envelopes). */
+      allowedUserIds?: string[];
+      /** Fase 14: si el mensaje referencia un adjunto, pasamos el ID para
+       *  que el server vincule attachment.message_id. */
+      attachmentId?: string;
     }): Promise<void> => {
       if (!selectedId || !myKeypair) throw new Error("no_conversation");
       await refreshDeviceKeys(selectedId);
@@ -311,14 +373,23 @@ export default function ChatPage() {
       if (recipients.length === 0) {
         throw new Error("No hay dispositivos con clave pública publicada.");
       }
+
+      const restrictedBytes =
+        params.attachmentRestricted && params.allowedUserIds
+          ? await encodeUtf8(JSON.stringify(params.attachmentRestricted))
+          : null;
+
       const envelopes = await Promise.all(
         recipients.map(async (d) => {
           const peerPub = await fromBase64(d.identityPublicKey!);
-          const env = await encryptFor(
-            params.plaintextBytes,
-            peerPub,
-            myKeypair.privateKey,
-          );
+          // Para adjuntos restringidos, encriptar con payload diferente
+          // según si el dispositivo pertenece a un usuario con acceso.
+          const payload =
+            restrictedBytes && params.allowedUserIds &&
+            !params.allowedUserIds.includes(d.userId)
+              ? restrictedBytes
+              : params.plaintextBytes;
+          const env = await encryptFor(payload, peerPub, myKeypair.privateKey);
           return {
             recipientDeviceId: d.deviceId,
             ciphertext: await toBase64(env.ciphertext),
@@ -338,6 +409,7 @@ export default function ChatPage() {
             clientId,
             contentType: params.contentType,
             envelopes,
+            attachmentId: params.attachmentId,
           },
           (res) => {
             clearTimeout(timer);
@@ -356,6 +428,7 @@ export default function ChatPage() {
             plaintext: params.localPlaintext,
             status: "ok" as const,
             attachment: params.attachment,
+            attachmentRestricted: undefined,
           },
         ];
       });
@@ -386,11 +459,26 @@ export default function ChatPage() {
   async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
-    if (!file || !selectedId || !myKeypair) return;
+    if (!file || !selectedId || !myKeypair || !selectedConv) return;
+
+    // En grupos mostramos el modal de opciones (PIN, acceso restringido).
+    // En DMs subimos directamente.
+    if (selectedConv.type === "group") {
+      setPendingFile(file);
+      return;
+    }
+    await doUploadFile(file, {});
+  }
+
+  async function doUploadFile(
+    file: File,
+    opts: { downloadPin?: string; allowedUserIds?: string[] },
+  ) {
+    if (!selectedId || !myKeypair) return;
     setUploading(true);
     setError(null);
     try {
-      const upload = await encryptAndUpload(selectedId, file);
+      const upload = await encryptAndUpload(selectedId, file, opts);
       const payload: AttachmentPayload = {
         kind: "attachment",
         attachmentId: upload.attachmentId,
@@ -400,12 +488,26 @@ export default function ChatPage() {
         fileKey: upload.fileKey,
         fileIv: upload.fileIv,
       };
+      const restricted: AttachmentRestrictedPayload | undefined =
+        opts.allowedUserIds && opts.allowedUserIds.length > 0
+          ? {
+              kind: "attachment_restricted",
+              attachmentId: upload.attachmentId,
+              fileName: upload.fileName,
+              mime: upload.mime,
+              byteSize: upload.byteSize,
+            }
+          : undefined;
+
       const json = JSON.stringify(payload);
       await sendEncrypted({
         plaintextBytes: await encodeUtf8(json),
         contentType: ATTACHMENT_CONTENT_TYPE,
         localPlaintext: json,
         attachment: payload,
+        attachmentRestricted: restricted,
+        allowedUserIds: opts.allowedUserIds,
+        attachmentId: upload.attachmentId,
       });
     } catch (err) {
       setError(err instanceof Error ? `Subida falló: ${err.message}` : "upload_failed");
@@ -592,24 +694,29 @@ export default function ChatPage() {
           })}
         </div>
 
-        {/* Footer sidebar: device info */}
+        {/* Footer sidebar: device info + calendar */}
         <div className="flex items-center gap-2 border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
           <Sparkles className="size-3 text-primary" />
-          <span className="truncate">
+          <span className="flex-1 truncate">
             {me.device.deviceName} · E2EE activo
           </span>
+          <Button asChild variant="ghost" size="icon" title="Calendario" className="size-7">
+            <a href="/app/calendar">
+              <CalendarDays className="size-3.5" />
+            </a>
+          </Button>
         </div>
       </aside>
 
       {/* ============== MAIN ============== */}
       <section
         className={[
-          "flex h-screen min-w-0 flex-col bg-background",
+          "flex h-screen min-w-0 bg-background",
           selectedId ? "flex" : "hidden md:flex",
         ].join(" ")}
       >
         {selectedConv ? (
-          <>
+          <div className="flex flex-1 min-w-0 flex-col">
             {/* Header */}
             <header className="flex items-center gap-3 border-b border-border bg-card px-4 py-3">
               <Button
@@ -646,6 +753,15 @@ export default function ChatPage() {
                         .join(", ")}
                 </div>
               </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowDocsPanel((v) => !v)}
+                title="Documentos de la conversación"
+                className={showDocsPanel ? "text-primary" : ""}
+              >
+                <FolderOpen className="size-4" />
+              </Button>
             </header>
 
             <SecurityBanner conversationId={selectedConv.id} />
@@ -701,7 +817,7 @@ export default function ChatPage() {
                             {sender?.displayName ?? "?"}
                           </div>
                         )}
-                        <MessageBody msg={msg} mine={mine} />
+                        <MessageBody msg={msg} mine={mine} currentUserId={me.user.id} />
                         <div
                           className={[
                             "mt-1 text-right text-[10px]",
@@ -755,6 +871,26 @@ export default function ChatPage() {
                     <Paperclip className="size-4" />
                   )}
                 </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setShowActivityModal(true)}
+                  disabled={uploading || sending}
+                  title="Nueva actividad"
+                >
+                  <CalendarPlus className="size-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setShowTaskModal(true)}
+                  disabled={uploading || sending}
+                  title="Nueva tarea"
+                >
+                  <ClipboardList className="size-4" />
+                </Button>
                 <Input
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
@@ -782,7 +918,7 @@ export default function ChatPage() {
                 </Button>
               </div>
             </form>
-          </>
+          </div>
         ) : (
           <div className="flex flex-1 items-center justify-center px-6">
             <div className="max-w-sm text-center">
@@ -799,7 +935,54 @@ export default function ChatPage() {
             </div>
           </div>
         )}
+
+        {/* Fase 14: Panel de documentos lateral */}
+        {showDocsPanel && selectedConv && (
+          <AttachmentsPanel
+            conversationId={selectedConv.id}
+            messageCache={attachmentCache}
+            currentUserId={me.user.id}
+            onClose={() => setShowDocsPanel(false)}
+          />
+        )}
       </section>
+
+      {/* Fase 14: Modal de opciones de envío para grupos */}
+      {pendingFile && selectedConv && (
+        <AttachmentOptionsModal
+          file={pendingFile}
+          members={selectedConv.members}
+          currentUserId={me.user.id}
+          onConfirm={(opts) => {
+            const f = pendingFile;
+            setPendingFile(null);
+            doUploadFile(f, opts);
+          }}
+          onCancel={() => setPendingFile(null)}
+        />
+      )}
+
+      {/* Fase 15: Modal nueva actividad */}
+      {showActivityModal && selectedConv && (
+        <CreateActivityModal
+          conversationId={selectedConv.id}
+          members={selectedConv.members}
+          currentUserId={me.user.id}
+          onCreated={() => {}}
+          onClose={() => setShowActivityModal(false)}
+        />
+      )}
+
+      {/* Fase 15: Modal nueva tarea */}
+      {showTaskModal && selectedConv && (
+        <CreateTaskModal
+          conversationId={selectedConv.id}
+          members={selectedConv.members}
+          currentUserId={me.user.id}
+          onCreated={() => {}}
+          onClose={() => setShowTaskModal(false)}
+        />
+      )}
 
       <NewConversationDialog
         open={showNew}
@@ -815,7 +998,31 @@ export default function ChatPage() {
   );
 }
 
-function MessageBody({ msg, mine }: { msg: RenderedMessage; mine: boolean }) {
+function MessageBody({ msg, mine, currentUserId }: { msg: RenderedMessage; mine: boolean; currentUserId: string }) {
+  if (msg.status === "restricted_attachment" && msg.attachmentRestricted) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Lock className="size-3.5 shrink-0 text-amber-400" />
+        <span>Documento restringido — Solo ciertos miembros tienen acceso</span>
+      </div>
+    );
+  }
+  if (msg.contentType === ACTIVITY_CONTENT_TYPE && msg.content) {
+    try {
+      const payload = JSON.parse(msg.content);
+      return <ActivityCard payload={payload} currentUserId={currentUserId} />;
+    } catch {
+      return <em className="opacity-80 text-xs">⚠ error al parsear actividad</em>;
+    }
+  }
+  if (msg.contentType === TASK_CONTENT_TYPE && msg.content) {
+    try {
+      const payload = JSON.parse(msg.content);
+      return <TaskCard payload={payload} currentUserId={currentUserId} />;
+    } catch {
+      return <em className="opacity-80 text-xs">⚠ error al parsear tarea</em>;
+    }
+  }
   if (msg.status === "ok" && msg.attachment) {
     return <AttachmentBubble att={msg.attachment} mine={mine} />;
   }
@@ -830,8 +1037,6 @@ function MessageBody({ msg, mine }: { msg: RenderedMessage; mine: boolean }) {
     );
   }
   if (msg.status === "no_envelope") {
-    // El mensaje fue cifrado antes de que este dispositivo existiera en DB.
-    // Es comportamiento esperado en E2EE — no es un error.
     return (
       <em className="opacity-60 text-xs">
         🔒 Mensaje anterior a este dispositivo

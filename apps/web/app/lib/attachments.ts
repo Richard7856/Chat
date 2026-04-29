@@ -6,8 +6,8 @@ import { loadSession } from "./api";
 /**
  * Crypto de archivos: AES-256-GCM via WebCrypto (nativo del navegador).
  * La clave simétrica se genera fresca por cada archivo y viaja DENTRO del
- * plaintext del mensaje que referencia el adjunto — o sea, cifrada con
- * NaCl box por cada dispositivo destinatario. El server nunca la ve.
+ * plaintext del mensaje que referencia el adjunto — cifrada con NaCl box
+ * por cada dispositivo destinatario. El server nunca la ve.
  */
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:4000";
@@ -30,13 +30,15 @@ async function importAesKey(raw: Uint8Array, usage: KeyUsage): Promise<CryptoKey
 }
 
 /**
- * Cifra un File en el navegador y lo sube como multipart a la API.
- * Devuelve {attachmentId, fileKey, fileIv} para que el caller los ponga
- * en el plaintext del mensaje que se cifrará con los envelopes.
+ * Cifra un File y lo sube a la API.
+ * Opciones de Fase 14:
+ *   downloadPin     — PIN de descarga (el servidor guarda el hash)
+ *   allowedUserIds  — Si se pasan, el acceso queda restringido a esos usuarios
  */
 export async function encryptAndUpload(
   conversationId: string,
   file: File,
+  opts: { downloadPin?: string; allowedUserIds?: string[] } = {},
 ): Promise<EncryptedUpload & FileMeta> {
   const session = loadSession();
   if (!session) throw new Error("no_session");
@@ -52,11 +54,17 @@ export async function encryptAndUpload(
     plaintext as BufferSource,
   );
 
-  // Usa un Blob neutro — el servidor no debe inferir el MIME real.
+  // El campo se llama "file" para que el parser multipart del server lo detecte.
   const ciphertextBlob = new Blob([ctBuf], { type: "application/octet-stream" });
-
   const form = new FormData();
-  form.append("blob", ciphertextBlob, "blob.enc");
+  form.append("file", ciphertextBlob, "blob.enc");
+
+  if (opts.downloadPin) {
+    form.append("downloadPin", opts.downloadPin);
+  }
+  if (opts.allowedUserIds && opts.allowedUserIds.length > 0) {
+    form.append("allowedUserIds", JSON.stringify(opts.allowedUserIds));
+  }
 
   const res = await fetch(
     `${API_BASE}/conversations/${conversationId}/attachments`,
@@ -89,23 +97,38 @@ export async function encryptAndUpload(
 }
 
 /**
- * Descarga el ciphertext y lo descifra en memoria. Devuelve un Blob con
- * el MIME original (que venía en el plaintext del mensaje).
+ * Descarga el ciphertext y lo descifra en memoria.
+ * Si el adjunto tiene PIN, se pasa en el header X-Download-Pin.
  */
 export async function downloadAndDecrypt(params: {
   attachmentId: string;
   fileKey: string;
   fileIv: string;
   mime: string;
+  downloadPin?: string;
 }): Promise<Blob> {
   const session = loadSession();
   if (!session) throw new Error("no_session");
 
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${session.accessToken}`,
+  };
+  if (params.downloadPin) {
+    headers["X-Download-Pin"] = params.downloadPin;
+  }
+
   const res = await fetch(
     `${API_BASE}/attachments/${params.attachmentId}/download`,
-    { headers: { Authorization: `Bearer ${session.accessToken}` } },
+    { headers },
   );
-  if (!res.ok) throw new Error(`download_failed_${res.status}`);
+  if (!res.ok) {
+    let code = `download_failed_${res.status}`;
+    try {
+      const payload = (await res.json()) as { error?: string };
+      if (payload.error) code = payload.error;
+    } catch {}
+    throw new Error(code);
+  }
 
   const ciphertext = new Uint8Array(await res.arrayBuffer());
   const rawKey = await fromBase64(params.fileKey);
@@ -128,27 +151,26 @@ export async function downloadFileToUser(params: {
   fileName: string;
   mime: string;
   byteSize: number;
+  downloadPin?: string;
 }): Promise<void> {
   const blob = await downloadAndDecrypt(params);
+  triggerFileSave(blob, params.fileName);
+  notifyDownload(params.attachmentId, params.fileName, params.byteSize).catch(() => {});
+}
+
+function triggerFileSave(blob: Blob, fileName: string): void {
   const url = URL.createObjectURL(blob);
   try {
     const a = document.createElement("a");
     a.href = url;
-    a.download = params.fileName;
+    a.download = fileName;
     a.rel = "noopener";
     document.body.appendChild(a);
     a.click();
     a.remove();
   } finally {
-    // Deja un tick para que el browser tome el blob antes de revocarlo.
     setTimeout(() => URL.revokeObjectURL(url), 5_000);
   }
-
-  // Notifica al server (best-effort). Crea un mensaje de sistema visible
-  // a todos los miembros de la conversación. Si falla, no rompe la UX.
-  notifyDownload(params.attachmentId, params.fileName, params.byteSize).catch(
-    () => {},
-  );
 }
 
 async function notifyDownload(

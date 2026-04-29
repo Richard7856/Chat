@@ -161,10 +161,27 @@ CREATE TABLE IF NOT EXISTS attachments (
   uploader_device_id UUID NOT NULL REFERENCES devices(id) ON DELETE RESTRICT,
   storage_key        TEXT NOT NULL UNIQUE,
   byte_size          BIGINT NOT NULL,
+  -- Fase 14: vínculo al mensaje que referencia este adjunto (tiene la clave AES).
+  message_id         UUID REFERENCES messages(id) ON DELETE SET NULL,
+  -- PIN de descarga opcional (bcrypt hash). NULL = sin PIN.
+  download_pin_hash  TEXT,
+  -- 'all' = todos los miembros; 'restricted' = solo attachment_allowed_users.
+  access_type        TEXT NOT NULL DEFAULT 'all'
+                       CHECK (access_type IN ('all', 'restricted')),
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_attachments_conv ON attachments(conversation_id);
+
+-- Lista blanca para attachments con access_type = 'restricted'.
+CREATE TABLE IF NOT EXISTS attachment_allowed_users (
+  attachment_id UUID NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+  user_id       UUID NOT NULL REFERENCES users(id)       ON DELETE CASCADE,
+  PRIMARY KEY (attachment_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachment_allowed
+  ON attachment_allowed_users(attachment_id);
 
 -- ============================================================================
 -- Auditoría (login, enrollment, revocación, altas/bajas)
@@ -182,3 +199,53 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_user_time ON audit_log(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+
+-- Fase 15: Actividades y Tareas
+CREATE TABLE IF NOT EXISTS activities (
+  id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  title             TEXT        NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+  description       TEXT        CHECK (length(description) <= 2000),
+  creator_user_id   UUID        NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id   UUID        REFERENCES conversations(id) ON DELETE SET NULL,
+  scheduled_at      TIMESTAMPTZ NOT NULL,
+  duration_minutes  INTEGER,
+  location          TEXT        CHECK (length(location) <= 300),
+  status            TEXT        NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'cancelled')),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS activity_participants (
+  activity_id   UUID NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+  user_id       UUID NOT NULL REFERENCES users(id)      ON DELETE CASCADE,
+  rsvp_status   TEXT NOT NULL DEFAULT 'pending'
+    CHECK (rsvp_status IN ('pending', 'confirmed', 'declined')),
+  responded_at  TIMESTAMPTZ,
+  PRIMARY KEY (activity_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  title             TEXT        NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+  description       TEXT        CHECK (length(description) <= 2000),
+  creator_user_id   UUID        NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  conversation_id   UUID        REFERENCES conversations(id) ON DELETE SET NULL,
+  due_date          DATE,
+  status            TEXT        NOT NULL DEFAULT 'open'
+    CHECK (status IN ('open', 'cancelled')),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS task_assignees (
+  task_id       UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  user_id       UUID NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
+  status        TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'in_progress', 'completed')),
+  completed_at  TIMESTAMPTZ,
+  PRIMARY KEY (task_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_activities_conv      ON activities(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_activities_scheduled ON activities(scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_conv           ON tasks(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_due            ON tasks(due_date);

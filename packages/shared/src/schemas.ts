@@ -244,6 +244,11 @@ export const SendMessageRequestSchema = z.object({
   /** ID generado en cliente para dedupe + optimistic UI. */
   clientId: z.string().uuid(),
   envelopes: z.array(EnvelopeInputSchema).min(1).max(200),
+  /**
+   * Fase 14: si este mensaje referencia un adjunto, incluir el attachmentId
+   * para que el servidor vincule attachment.message_id = message.id.
+   */
+  attachmentId: z.string().uuid().optional(),
 });
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>;
 
@@ -264,7 +269,7 @@ export const DeviceKeySchema = z.object({
 export type DeviceKey = z.infer<typeof DeviceKeySchema>;
 
 // ============================================================================
-// Adjuntos (Fase 5) — archivos cifrados E2EE
+// Adjuntos (Fase 5 + Fase 14) — archivos cifrados E2EE
 // ============================================================================
 
 /** Content type que identifica un mensaje cuyo plaintext describe un adjunto. */
@@ -291,6 +296,19 @@ export const AttachmentPayloadSchema = z.object({
 });
 export type AttachmentPayload = z.infer<typeof AttachmentPayloadSchema>;
 
+/**
+ * Payload para dispositivos que NO tienen acceso al documento restringido.
+ * No incluye fileKey ni fileIv — solo metadatos para mostrar la burbuja bloqueada.
+ */
+export const AttachmentRestrictedPayloadSchema = z.object({
+  kind: z.literal("attachment_restricted"),
+  attachmentId: z.string().uuid(),
+  fileName: z.string().min(1).max(260),
+  mime: z.string().min(1).max(100),
+  byteSize: z.number().int().positive(),
+});
+export type AttachmentRestrictedPayload = z.infer<typeof AttachmentRestrictedPayloadSchema>;
+
 export const UploadAttachmentResponseSchema = z.object({
   attachmentId: z.string().uuid(),
   byteSize: z.number().int().nonnegative(),
@@ -298,6 +316,23 @@ export const UploadAttachmentResponseSchema = z.object({
 export type UploadAttachmentResponse = z.infer<
   typeof UploadAttachmentResponseSchema
 >;
+
+/** Un ítem en la biblioteca de documentos de una conversación. */
+export const AttachmentListItemSchema = z.object({
+  id: z.string().uuid(),
+  uploaderUserId: z.string().uuid(),
+  uploaderDisplayName: z.string(),
+  byteSize: z.number().int(),
+  createdAt: z.string().datetime(),
+  accessType: z.enum(["all", "restricted"]),
+  /** User IDs con acceso (solo relevante cuando accessType = 'restricted'). */
+  allowedUserIds: z.array(z.string().uuid()),
+  /** true si requiere PIN para descargar. */
+  hasPin: z.boolean(),
+  /** ID del mensaje que referencia este adjunto (tiene la clave AES). */
+  messageId: z.string().uuid().nullable(),
+});
+export type AttachmentListItem = z.infer<typeof AttachmentListItemSchema>;
 
 // ============================================================================
 // System events (avisos de seguridad visibles en el chat)
@@ -446,6 +481,93 @@ export const AdminAuditLogItemSchema = z.object({
 export type AdminAuditLogItem = z.infer<typeof AdminAuditLogItemSchema>;
 
 // ============================================================================
+// Actividades y Tareas (Fase 15)
+// ============================================================================
+
+/** Content type del mensaje de sistema que representa una actividad en el chat. */
+export const ACTIVITY_CONTENT_TYPE = "application/vnd.euromex.activity+json";
+
+/** Content type del mensaje de sistema que representa una tarea en el chat. */
+export const TASK_CONTENT_TYPE = "application/vnd.euromex.task+json";
+
+export const CreateActivityRequestSchema = z.object({
+  title: z.string().min(1).max(200),
+  description: z.string().max(2000).optional(),
+  scheduledAt: z.string().datetime(),
+  durationMinutes: z.number().int().positive().optional(),
+  location: z.string().max(300).optional(),
+  /** Al menos un participante aparte del creador. */
+  participantIds: z.array(z.string().uuid()).min(1),
+  /** Conversación donde se publicará el mensaje de la actividad. */
+  conversationId: z.string().uuid().optional(),
+});
+export type CreateActivityRequest = z.infer<typeof CreateActivityRequestSchema>;
+
+export const RsvpRequestSchema = z.object({
+  status: z.enum(["confirmed", "declined"]),
+});
+export type RsvpRequest = z.infer<typeof RsvpRequestSchema>;
+
+export const ActivityParticipantSchema = z.object({
+  userId: z.string().uuid(),
+  displayName: z.string(),
+  username: z.string(),
+  rsvpStatus: z.enum(["pending", "confirmed", "declined"]),
+  respondedAt: z.string().datetime().nullable(),
+});
+export type ActivityParticipant = z.infer<typeof ActivityParticipantSchema>;
+
+export const ActivitySchema = z.object({
+  id: z.string().uuid(),
+  title: z.string(),
+  description: z.string().nullable(),
+  creatorUserId: z.string().uuid(),
+  creatorDisplayName: z.string(),
+  conversationId: z.string().uuid().nullable(),
+  scheduledAt: z.string().datetime(),
+  durationMinutes: z.number().int().nullable(),
+  location: z.string().nullable(),
+  status: z.enum(["active", "cancelled"]),
+  participants: z.array(ActivityParticipantSchema),
+  createdAt: z.string().datetime(),
+});
+export type Activity = z.infer<typeof ActivitySchema>;
+
+export const CreateTaskRequestSchema = z.object({
+  title: z.string().min(1).max(200),
+  description: z.string().max(2000).optional(),
+  dueDate: z.string().date().optional(),
+  /** Uno o más responsables. */
+  assigneeIds: z.array(z.string().uuid()).min(1),
+  /** Conversación donde se publicará el mensaje de la tarea. */
+  conversationId: z.string().uuid().optional(),
+});
+export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;
+
+export const TaskAssigneeSchema = z.object({
+  userId: z.string().uuid(),
+  displayName: z.string(),
+  username: z.string(),
+  status: z.enum(["pending", "in_progress", "completed"]),
+  completedAt: z.string().datetime().nullable(),
+});
+export type TaskAssignee = z.infer<typeof TaskAssigneeSchema>;
+
+export const TaskSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string(),
+  description: z.string().nullable(),
+  creatorUserId: z.string().uuid(),
+  creatorDisplayName: z.string(),
+  conversationId: z.string().uuid().nullable(),
+  dueDate: z.string().nullable(),
+  status: z.enum(["open", "cancelled"]),
+  assignees: z.array(TaskAssigneeSchema),
+  createdAt: z.string().datetime(),
+});
+export type Task = z.infer<typeof TaskSchema>;
+
+// ============================================================================
 // Socket.IO events
 // ============================================================================
 
@@ -453,6 +575,10 @@ export interface ServerToClientEvents {
   "message:new": (msg: Message) => void;
   "conversation:updated": (conv: Conversation) => void;
   "typing:update": (p: { conversationId: string; userId: string; typing: boolean }) => void;
+  /** Fase 15: algún participante actualizó su RSVP en una actividad. */
+  "activity:updated": (p: { activityId: string; conversationId: string }) => void;
+  /** Fase 15: algún asignado actualizó su estado en una tarea. */
+  "task:updated": (p: { taskId: string; conversationId: string }) => void;
   error: (p: { code: string; message?: string }) => void;
 }
 
@@ -465,6 +591,8 @@ export interface ClientToServerEvents {
       clientId: string;
       contentType: string;
       envelopes: EnvelopeInput[];
+      /** Fase 14: adjunto referenciado por este mensaje (para vincular message_id). */
+      attachmentId?: string;
     },
     ack?: (res: { ok: true; message: Message } | { ok: false; error: string }) => void,
   ) => void;

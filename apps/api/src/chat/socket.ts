@@ -15,6 +15,7 @@ import {
   isConversationMember,
   type IncomingEnvelope,
 } from "./repo.js";
+import { linkAttachmentToMessage } from "./attachments-repo.js";
 
 type IOServer = SocketIOServer<
   ClientToServerEvents,
@@ -124,7 +125,7 @@ export function registerSocketIO(app: FastifyInstance): IOServer {
 
     socket.on("message:send", async (payload, ack) => {
       try {
-        const { conversationId, clientId, contentType, envelopes } = payload;
+        const { conversationId, clientId, contentType, envelopes, attachmentId } = payload;
         if (typeof conversationId !== "string" || typeof clientId !== "string") {
           ack?.({ ok: false, error: "invalid_payload" });
           return;
@@ -148,6 +149,13 @@ export function registerSocketIO(app: FastifyInstance): IOServer {
           contentType: ct,
           envelopes: normalized,
         });
+
+        // Fase 14: vincular attachment.message_id si el mensaje referencia uno.
+        if (typeof attachmentId === "string") {
+          linkAttachmentToMessage(attachmentId, res.messageId, session.sub).catch((err) => {
+            app.log.warn({ err, attachmentId }, "socket: failed to link attachment to message");
+          });
+        }
 
         fanOutMessage(io, {
           messageId: res.messageId,
@@ -284,5 +292,29 @@ export function broadcastConversationUpdated(
 ) {
   for (const m of conv.members) {
     app.io?.to(USER_ROOM(m.userId)).emit("conversation:updated", conv);
+  }
+}
+
+/** Emite `activity:updated` a todos los miembros de la conversación (Fase 15). */
+export function broadcastActivityUpdated(
+  app: FastifyInstance,
+  activityId: string,
+  conversationId: string,
+  memberUserIds: string[],
+) {
+  for (const userId of memberUserIds) {
+    app.io?.to(USER_ROOM(userId)).emit("activity:updated", { activityId, conversationId });
+  }
+}
+
+/** Emite `task:updated` a todos los miembros de la conversación (Fase 15). */
+export function broadcastTaskUpdated(
+  app: FastifyInstance,
+  taskId: string,
+  conversationId: string,
+  memberUserIds: string[],
+) {
+  for (const userId of memberUserIds) {
+    app.io?.to(USER_ROOM(userId)).emit("task:updated", { taskId, conversationId });
   }
 }

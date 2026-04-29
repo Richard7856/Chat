@@ -1,8 +1,10 @@
 import { createReadStream } from "node:fs";
 import type { FastifyInstance } from "fastify";
+import * as argon2 from "argon2";
 import {
   AttachmentDownloadedNotifySchema,
   SYSTEM_CONTENT_TYPE,
+  type AttachmentListItem,
   type SystemEvent,
   type UploadAttachmentResponse,
 } from "@euromex/shared";
@@ -14,7 +16,10 @@ import {
 } from "../chat/repo.js";
 import {
   getAttachmentForUser,
+  getAttachmentsForConversation,
   insertAttachment,
+  insertAttachmentAllowedUsers,
+  isAttachmentAllowed,
 } from "../chat/attachments-repo.js";
 import { broadcastSystemMessage } from "../chat/socket.js";
 import {
@@ -29,8 +34,35 @@ import { pool } from "../db/pg.js";
 
 export async function attachmentRoutes(app: FastifyInstance) {
   // --------------------------------------------------------------------------
-  // POST /conversations/:id/attachments — sube un blob ya cifrado
-  // El cuerpo es multipart/form-data con un solo campo file="blob".
+  // GET /conversations/:id/attachments — biblioteca de documentos
+  // Devuelve la lista de adjuntos subidos en la conversación con metadatos
+  // de acceso (quién tiene permiso, si tiene PIN) pero sin la clave AES
+  // (que sigue viviendo en el mensaje E2EE).
+  // --------------------------------------------------------------------------
+  app.get<{ Params: { id: string } }>(
+    "/conversations/:id/attachments",
+    { preHandler: [requireAuth] },
+    async (req, reply): Promise<{ attachments: AttachmentListItem[] }> => {
+      const userId = req.session!.sub;
+      const conversationId = req.params.id;
+
+      if (!(await isConversationMember(userId, conversationId))) {
+        return reply.code(403).send({ error: "not_a_member" });
+      }
+
+      const attachments = await getAttachmentsForConversation(conversationId);
+      return { attachments };
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // POST /conversations/:id/attachments — sube un blob ya cifrado.
+  // Body: multipart/form-data con campo "file" + campos de texto opcionales
+  // para PIN y lista de usuarios con acceso.
+  //
+  // Campos extra opcionales (como campos de texto en el multipart):
+  //   downloadPin   — texto plano; se hashea con argon2 y se guarda
+  //   allowedUserIds — JSON array de UUIDs; si está, acceso = 'restricted'
   // --------------------------------------------------------------------------
   app.post<{ Params: { id: string } }>(
     "/conversations/:id/attachments",
@@ -44,34 +76,65 @@ export async function attachmentRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "not_a_member" });
       }
 
-      // Extrae el archivo multipart. Solo uno permitido.
-      const part = await req.file({
+      // Acepta un campo file + campos de texto opcionales para PIN y acceso.
+      let downloadPin: string | undefined;
+      let allowedUserIds: string[] | undefined;
+
+      const parts = req.parts({
         limits: {
           fileSize: config.maxAttachmentBytes,
           files: 1,
-          fields: 0, // no metadata — todo va en el plaintext del mensaje
+          fields: 2, // downloadPin + allowedUserIds
         },
       });
-      if (!part) {
+
+      let storageKey: string | null = null;
+      let byteSize = 0;
+      let truncated = false;
+
+      for await (const part of parts) {
+        if (part.type === "file" && part.fieldname === "file") {
+          storageKey = generateStorageKey();
+          try {
+            byteSize = await writeBlob(storageKey, part.file);
+          } catch (err) {
+            if (storageKey) await deleteBlob(storageKey).catch(() => {});
+            req.log.error({ err }, "attachment.upload failed");
+            return reply.code(500).send({ error: "upload_failed" });
+          }
+          truncated = part.file.truncated;
+        } else if (part.type === "field") {
+          if (part.fieldname === "downloadPin" && typeof part.value === "string" && part.value.length > 0) {
+            downloadPin = part.value;
+          } else if (part.fieldname === "allowedUserIds" && typeof part.value === "string") {
+            try {
+              const parsed = JSON.parse(part.value);
+              if (Array.isArray(parsed)) {
+                allowedUserIds = parsed.filter((v): v is string => typeof v === "string");
+              }
+            } catch {
+              // ignorar JSON mal formado
+            }
+          }
+        }
+      }
+
+      if (!storageKey) {
         return reply.code(400).send({ error: "missing_file" });
       }
 
-      const storageKey = generateStorageKey();
-      let byteSize = 0;
-      try {
-        byteSize = await writeBlob(storageKey, part.file);
-      } catch (err) {
-        await deleteBlob(storageKey).catch(() => {});
-        req.log.error({ err }, "attachment.upload failed");
-        return reply.code(500).send({ error: "upload_failed" });
-      }
-
-      // Rechaza si Fastify marcó el stream como truncado (archivo excedió
-      // el límite durante el stream).
-      if (part.file.truncated) {
+      if (truncated) {
         await deleteBlob(storageKey).catch(() => {});
         return reply.code(413).send({ error: "file_too_large" });
       }
+
+      // Hashear el PIN si fue provisto.
+      let downloadPinHash: string | undefined;
+      if (downloadPin) {
+        downloadPinHash = await argon2.hash(downloadPin, { type: argon2.argon2id });
+      }
+
+      const accessType = allowedUserIds && allowedUserIds.length > 0 ? "restricted" : "all";
 
       const { id: attachmentId } = await insertAttachment({
         conversationId,
@@ -79,7 +142,17 @@ export async function attachmentRoutes(app: FastifyInstance) {
         uploaderDeviceId: deviceId,
         storageKey,
         byteSize,
+        downloadPinHash,
+        accessType,
       });
+
+      // Insertar lista blanca si es acceso restringido.
+      // El uploader siempre tiene acceso implícito, pero lo agregamos
+      // explícitamente para simplificar las queries de validación.
+      if (accessType === "restricted" && allowedUserIds) {
+        const withUploader = Array.from(new Set([userId, ...allowedUserIds]));
+        await insertAttachmentAllowedUsers(attachmentId, withUploader);
+      }
 
       return { attachmentId, byteSize };
     },
@@ -87,14 +160,7 @@ export async function attachmentRoutes(app: FastifyInstance) {
 
   // --------------------------------------------------------------------------
   // POST /attachments/:id/downloaded — el cliente notifica al server que
-  // descargó+descifró exitosamente el archivo. El server emite un aviso
-  // de sistema visible a toda la conversación.
-  //
-  // Body: { fileName, byteSize } — metadatos del archivo en plaintext.
-  //       El server NO puede validarlos contra el plaintext real (es E2EE)
-  //       pero los reporta tal cual al resto del equipo. Un cliente
-  //       malicioso podría inventar el fileName, pero lo relevante es que
-  //       el archivo SÍ se descargó (el GET /download lo verifica).
+  // descargó+descifró exitosamente el archivo.
   // --------------------------------------------------------------------------
   app.post<{ Params: { id: string } }>(
     "/attachments/:id/downloaded",
@@ -142,7 +208,11 @@ export async function attachmentRoutes(app: FastifyInstance) {
         [
           userId,
           deviceId,
-          JSON.stringify({ attachmentId: req.params.id, conversationId: att.conversation_id, fileName: parsed.data.fileName }),
+          JSON.stringify({
+            attachmentId: req.params.id,
+            conversationId: att.conversation_id,
+            fileName: parsed.data.fileName,
+          }),
           req.ip,
           req.headers["user-agent"] ?? null,
         ],
@@ -165,15 +235,36 @@ export async function attachmentRoutes(app: FastifyInstance) {
   );
 
   // --------------------------------------------------------------------------
-  // GET /attachments/:id/download — devuelve el ciphertext crudo
-  // El cliente lo descifra con la clave AES que traía el mensaje.
+  // GET /attachments/:id/download — devuelve el ciphertext crudo.
+  // Verifica: membresía, acceso (si restricted), PIN (si configurado).
   // --------------------------------------------------------------------------
   app.get<{ Params: { id: string } }>(
     "/attachments/:id/download",
     { preHandler: [requireAuth] },
     async (req, reply) => {
-      const att = await getAttachmentForUser(req.params.id, req.session!.sub);
+      const userId = req.session!.sub;
+      const att = await getAttachmentForUser(req.params.id, userId);
       if (!att) return reply.code(404).send({ error: "not_found" });
+
+      // Verificar acceso restringido.
+      if (att.access_type === "restricted") {
+        const allowed = await isAttachmentAllowed(att.id, userId);
+        if (!allowed) {
+          return reply.code(403).send({ error: "access_denied" });
+        }
+      }
+
+      // Verificar PIN si el attachment tiene uno configurado.
+      if (att.download_pin_hash) {
+        const pin = req.headers["x-download-pin"] as string | undefined;
+        if (!pin) {
+          return reply.code(403).send({ error: "pin_required" });
+        }
+        const pinValid = await argon2.verify(att.download_pin_hash, pin);
+        if (!pinValid) {
+          return reply.code(403).send({ error: "invalid_pin" });
+        }
+      }
 
       if (!(await blobExists(att.storage_key))) {
         return reply.code(410).send({ error: "blob_gone" });
@@ -182,8 +273,6 @@ export async function attachmentRoutes(app: FastifyInstance) {
       const { path } = streamBlob(att.storage_key);
       const size = Number(att.byte_size);
 
-      // Content-Type genérico — el archivo está cifrado, no hay mime real
-      // que el server pueda afirmar.
       reply
         .header("Content-Type", "application/octet-stream")
         .header("Content-Length", String(size))
