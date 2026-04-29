@@ -6,6 +6,7 @@ import {
   FileClock,
   Loader2,
   MessageSquare,
+  Network,
   ShieldCheck,
   Ticket,
   Users as UsersIcon,
@@ -18,8 +19,9 @@ import { Button } from "../../components/ui/button";
 import { UsersTab } from "./users-tab";
 import { InvitationsTab } from "./invitations-tab";
 import { AuditTab } from "./audit-tab";
+import { OrgChartTab } from "./org-chart-tab";
 
-type Tab = "users" | "invitations" | "audit";
+type Tab = "users" | "invitations" | "audit" | "org";
 
 interface MeResponse {
   user: {
@@ -135,6 +137,12 @@ export default function AdminPage() {
             icon={<FileClock className="size-4" />}
             label="Audit log"
           />
+          <TabBtn
+            active={tab === "org"}
+            onClick={() => setTab("org")}
+            icon={<Network className="size-4" />}
+            label="Organigrama"
+          />
         </div>
 
         {/* Error global */}
@@ -160,6 +168,7 @@ export default function AdminPage() {
           )}
           {tab === "invitations" && <InvitationsTab onError={setError} />}
           {tab === "audit" && <AuditTab onError={setError} />}
+          {tab === "org" && <OrgChartTab onError={setError} />}
         </section>
       </div>
     </main>

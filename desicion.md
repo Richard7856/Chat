@@ -115,9 +115,9 @@ sudo systemctl start euromex-backup.service
 
 ## Estado actual
 
-- **Fase:** 13 — Re-auth TOTP + soft logout + multi-dispositivo ✅
+- **Fase:** 10 — Organigrama + perfil extendido ✅
 - **Estado:** producción corriendo + features post-plan en expansión
-  continua (Fase 8.1, 8.2, 9, 12, 13).
+  continua (Fase 8.1, 8.2, 9, 10, 12, 13).
 - **Última actualización:** 2026-04-29
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
@@ -185,6 +185,33 @@ pide:
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-04-29] Fase 10 — Organigrama + perfil extendido
+
+- **Qué se añadió:** 3 columnas nuevas en `users` (`job_title`, `department`,
+  `manager_user_id`) + tab "Organigrama" en el panel admin con árbol visual
+  jerárquico.
+- **Diseño del árbol:** se construye en el cliente a partir de la lista
+  `/admin/users` que ya trae `managerUserId`. No se añadió endpoint nuevo.
+  Árbol vertical con indentación CSS — sin librerías externas (suficiente
+  para <25 personas).
+- **Edición:** los 3 campos nuevos se añadieron al modal de edición existente
+  de `users-tab`. El dropdown de jefe muestra solo usuarios activos excepto
+  el propio usuario. El servidor rechaza auto-asignación (`self_manager`).
+- **`manager_user_id ON DELETE SET NULL`:** si se elimina un usuario que es
+  jefe, sus reportes quedan como nodos raíz automáticamente.
+- **`department` y `job_title` son texto libre:** Euromex define sus propios
+  nombres. Se puede añadir autocompletado desde los valores existentes en
+  el futuro.
+- **Impacto:**
+  - `apps/api/src/db/migrations/006-profile-extended.sql` (nuevo).
+  - `packages/shared/src/schemas.ts`: `AdminUserListItem` + `AdminUserUpdateRequest`
+    con los 3 campos nuevos.
+  - `apps/api/src/admin/repo.ts`: queries con LEFT JOIN para `manager_display_name`,
+    validación `self_manager` en `updateUserAsAdmin`.
+  - `apps/web/app/app/admin/users-tab.tsx`: modal extendido + pills en tabla.
+  - `apps/web/app/app/admin/org-chart-tab.tsx` (nuevo): árbol recursivo.
+  - `apps/web/app/app/admin/page.tsx`: tab "Organigrama".
 
 ### [2026-04-29] Fase 13 — Re-auth con solo TOTP + soft logout
 

@@ -34,7 +34,13 @@ export function UsersTab({
 
   // --- estado del modal de edición de perfil ---
   const [editTarget, setEditTarget] = useState<AdminUserListItem | null>(null);
-  const [editDraft, setEditDraft] = useState({ displayName: "", email: "" });
+  const [editDraft, setEditDraft] = useState({
+    displayName: "",
+    email: "",
+    jobTitle: "",
+    department: "",
+    managerUserId: "" as string, // "" = sin manager (null en DB)
+  });
   const [editError, setEditError] = useState<string | null>(null);
   const [editSaving, setEditSaving] = useState(false);
 
@@ -78,7 +84,13 @@ export function UsersTab({
   /** Abre el modal precargado con los datos actuales del usuario. */
   function openEdit(user: AdminUserListItem) {
     setEditTarget(user);
-    setEditDraft({ displayName: user.displayName, email: user.email ?? "" });
+    setEditDraft({
+      displayName: user.displayName,
+      email: user.email ?? "",
+      jobTitle: user.jobTitle ?? "",
+      department: user.department ?? "",
+      managerUserId: user.managerUserId ?? "",
+    });
     setEditError(null);
   }
 
@@ -110,6 +122,14 @@ export function UsersTab({
     if (trimmedName !== editTarget.displayName) p.displayName = trimmedName;
     if (newEmail !== editTarget.email) p.email = newEmail;
 
+    const newJobTitle = editDraft.jobTitle.trim() || null;
+    const newDepartment = editDraft.department.trim() || null;
+    const newManagerId = editDraft.managerUserId || null;
+
+    if (newJobTitle !== editTarget.jobTitle) p.jobTitle = newJobTitle;
+    if (newDepartment !== editTarget.department) p.department = newDepartment;
+    if (newManagerId !== editTarget.managerUserId) p.managerUserId = newManagerId;
+
     if (Object.keys(p).length === 0) {
       // Nada cambió — cerrar sin llamar al servidor
       setEditTarget(null);
@@ -128,8 +148,12 @@ export function UsersTab({
       );
       setEditTarget(null);
     } catch (err) {
-      // Error queda visible dentro del modal para que el admin pueda corregir
-      setEditError(err instanceof Error ? err.message : "update_failed");
+      const code = err instanceof Error ? err.message : "update_failed";
+      const humanized: Record<string, string> = {
+        self_manager: "Un usuario no puede ser su propio jefe.",
+        last_active_admin: "No es posible: quedaría el sistema sin administradores.",
+      };
+      setEditError(humanized[code] ?? `Error: ${code}`);
     } finally {
       setEditSaving(false);
     }
@@ -208,6 +232,68 @@ export function UsersTab({
               <p className="text-xs text-muted-foreground">
                 Deja vacío para eliminar el email del usuario.
               </p>
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit-job-title">
+                Cargo{" "}
+                <span className="text-xs font-normal text-muted-foreground">
+                  (opcional)
+                </span>
+              </Label>
+              <Input
+                id="edit-job-title"
+                value={editDraft.jobTitle}
+                onChange={(e) =>
+                  setEditDraft((d) => ({ ...d, jobTitle: e.target.value }))
+                }
+                placeholder="Gerente de Ventas"
+                maxLength={80}
+                autoComplete="off"
+                disabled={editSaving}
+              />
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit-department">
+                Departamento{" "}
+                <span className="text-xs font-normal text-muted-foreground">
+                  (opcional)
+                </span>
+              </Label>
+              <Input
+                id="edit-department"
+                value={editDraft.department}
+                onChange={(e) =>
+                  setEditDraft((d) => ({ ...d, department: e.target.value }))
+                }
+                placeholder="Ventas"
+                maxLength={80}
+                autoComplete="off"
+                disabled={editSaving}
+              />
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit-manager">Jefe directo</Label>
+              <select
+                id="edit-manager"
+                value={editDraft.managerUserId}
+                onChange={(e) =>
+                  setEditDraft((d) => ({ ...d, managerUserId: e.target.value }))
+                }
+                disabled={editSaving}
+                className="flex h-10 w-full rounded-md border border-border bg-input px-3 py-2 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <option value="">— Sin jefe directo —</option>
+                {users
+                  .filter((u) => u.id !== editTarget?.id && u.status === "active")
+                  .map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.displayName} (@{u.username})
+                    </option>
+                  ))}
+              </select>
             </div>
 
             {editError && (
@@ -294,6 +380,20 @@ export function UsersTab({
                             @{u.username}
                             {u.email ? ` · ${u.email}` : ""}
                           </div>
+                          {(u.jobTitle || u.department) && (
+                            <div className="mt-0.5 flex flex-wrap gap-1">
+                              {u.department && (
+                                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                  {u.department}
+                                </span>
+                              )}
+                              {u.jobTitle && (
+                                <span className="text-[10px] text-muted-foreground/70">
+                                  {u.jobTitle}
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>

@@ -371,6 +371,12 @@ export const AdminUserListItemSchema = z.object({
   activeDevicesCount: z.number().int().nonnegative(),
   lastSeenAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),
+  // Fase 10 — campos de perfil extendido (organigrama)
+  jobTitle: z.string().nullable(),
+  department: z.string().nullable(),
+  managerUserId: z.string().uuid().nullable(),
+  /** Nombre del jefe directo — denormalizado para no necesitar lookup adicional. */
+  managerDisplayName: z.string().nullable(),
 });
 export type AdminUserListItem = z.infer<typeof AdminUserListItemSchema>;
 
@@ -381,6 +387,11 @@ export const AdminUserUpdateRequestSchema = z
     displayName: z.string().min(1).max(64).optional(),
     email: z.string().email().nullable().optional(),
     status: UserStatusSchema.optional(),
+    // Fase 10 — perfil extendido
+    jobTitle: z.string().max(80).nullable().optional(),
+    department: z.string().max(80).nullable().optional(),
+    /** null = sin jefe; uuid = asignar jefe. El servidor rechaza auto-asignación. */
+    managerUserId: z.string().uuid().nullable().optional(),
   })
   .refine(
     (v) =>
@@ -388,7 +399,10 @@ export const AdminUserUpdateRequestSchema = z
       v.receivesSecurityAlerts !== undefined ||
       v.displayName !== undefined ||
       v.email !== undefined ||
-      v.status !== undefined,
+      v.status !== undefined ||
+      v.jobTitle !== undefined ||
+      v.department !== undefined ||
+      v.managerUserId !== undefined,
     { message: "al menos un campo debe cambiar" },
   );
 export type AdminUserUpdateRequest = z.infer<

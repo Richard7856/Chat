@@ -31,15 +31,23 @@ export async function listAdminUsers(): Promise<AdminUserListItem[]> {
     active_devices_count: string;
     last_seen_at: Date | null;
     created_at: Date;
+    job_title: string | null;
+    department: string | null;
+    manager_user_id: string | null;
+    manager_display_name: string | null;
   }>(
+    // LEFT JOIN a sí misma para traer el nombre del jefe directo en una sola query
     `SELECT u.id, u.username, u.display_name, u.email, u.role,
             u.receives_security_alerts, u.status, u.created_at,
+            u.job_title, u.department, u.manager_user_id,
+            m.display_name AS manager_display_name,
             COALESCE((
               SELECT COUNT(*) FROM devices d
                WHERE d.user_id = u.id AND d.status = 'active'
             ), 0) AS active_devices_count,
             (SELECT MAX(d.last_seen_at) FROM devices d WHERE d.user_id = u.id) AS last_seen_at
        FROM users u
+       LEFT JOIN users m ON m.id = u.manager_user_id
       ORDER BY u.created_at DESC`,
   );
   return r.rows.map((row) => ({
@@ -53,6 +61,10 @@ export async function listAdminUsers(): Promise<AdminUserListItem[]> {
     activeDevicesCount: Number(row.active_devices_count),
     lastSeenAt: row.last_seen_at ? row.last_seen_at.toISOString() : null,
     createdAt: row.created_at.toISOString(),
+    jobTitle: row.job_title,
+    department: row.department,
+    managerUserId: row.manager_user_id,
+    managerDisplayName: row.manager_display_name,
   }));
 }
 
@@ -77,15 +89,22 @@ export async function getUserForAdmin(
     active_devices_count: string;
     last_seen_at: Date | null;
     created_at: Date;
+    job_title: string | null;
+    department: string | null;
+    manager_user_id: string | null;
+    manager_display_name: string | null;
   }>(
     `SELECT u.id, u.username, u.display_name, u.email, u.role,
             u.receives_security_alerts, u.status, u.created_at,
+            u.job_title, u.department, u.manager_user_id,
+            m.display_name AS manager_display_name,
             COALESCE((
               SELECT COUNT(*) FROM devices d
                WHERE d.user_id = u.id AND d.status = 'active'
             ), 0) AS active_devices_count,
             (SELECT MAX(d.last_seen_at) FROM devices d WHERE d.user_id = u.id) AS last_seen_at
        FROM users u
+       LEFT JOIN users m ON m.id = u.manager_user_id
       WHERE u.id = $1`,
     [id],
   );
@@ -102,6 +121,10 @@ export async function getUserForAdmin(
     activeDevicesCount: Number(row.active_devices_count),
     lastSeenAt: row.last_seen_at ? row.last_seen_at.toISOString() : null,
     createdAt: row.created_at.toISOString(),
+    jobTitle: row.job_title,
+    department: row.department,
+    managerUserId: row.manager_user_id,
+    managerDisplayName: row.manager_display_name,
   };
 }
 
@@ -131,6 +154,11 @@ export async function updateUserAsAdmin(
     }
   }
 
+  // Validar que nadie sea su propio jefe — evita ciclos triviales
+  if (patch.managerUserId !== undefined && patch.managerUserId === id) {
+    return { ok: false, error: "self_manager" };
+  }
+
   const sets: string[] = [];
   const values: unknown[] = [];
   let i = 1;
@@ -153,6 +181,18 @@ export async function updateUserAsAdmin(
   if (patch.status !== undefined) {
     sets.push(`status = $${i++}`);
     values.push(patch.status);
+  }
+  if (patch.jobTitle !== undefined) {
+    sets.push(`job_title = $${i++}`);
+    values.push(patch.jobTitle);
+  }
+  if (patch.department !== undefined) {
+    sets.push(`department = $${i++}`);
+    values.push(patch.department);
+  }
+  if (patch.managerUserId !== undefined) {
+    sets.push(`manager_user_id = $${i++}`);
+    values.push(patch.managerUserId);
   }
   sets.push(`updated_at = now()`);
   values.push(id);
