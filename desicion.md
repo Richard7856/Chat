@@ -98,9 +98,17 @@ systemctl status euromex-api euromex-web --no-pager
 journalctl -u euromex-api -f
 
 # Deploy de código nuevo
+# IMPORTANTE: el VPS debe estar en la rama correcta. Verificar con `git branch`.
+# Si no está en claude/private-chat-mac-auth-e9QYn:
+#   git checkout claude/private-chat-mac-auth-e9QYn
 cd /opt/euromex && git pull && pnpm install
 cd apps/web && pnpm build
 systemctl restart euromex-api euromex-web
+
+# Aplicar migración de DB (solo cuando haya archivo nuevo en migrations/)
+source infra/.env && docker exec -i euromex-postgres psql \
+  -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  < apps/api/src/db/migrations/<archivo>.sql
 
 # Crear admin nuevo
 cd /opt/euromex/apps/api
@@ -115,18 +123,26 @@ sudo systemctl start euromex-backup.service
 
 ## Estado actual
 
-- **Fase:** 10 — Organigrama + perfil extendido ✅
-- **Estado:** producción corriendo + features post-plan en expansión
-  continua (Fase 8.1, 8.2, 9, 10, 12, 13).
+- **Fase:** 13 (última completada) — Re-auth TOTP + soft logout ✅
+- **Estado:** producción corriendo. Todas las fases del plan original
+  completadas + extensiones post-plan (10, 12, 13, botón admin en chat).
 - **Última actualización:** 2026-04-29
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
+  ⚠️ El VPS debe estar en esta rama: `git checkout claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
-- **Fases futuras sugeridas (no obligatorias):**
-  - 10: organigrama + campos de perfil extendido (job_title, department,
-    manager_user_id).
-  - 11: SSO / integración con herramientas externas (dashboard financiero,
-    Bitwarden, etc.) vía JWT firmados.
-  - 12: edición de perfil completo desde admin UI (email, displayName).
+- **Fase pendiente (no iniciada):**
+  - **11:** SSO / integración con herramientas externas (dashboard financiero,
+    Bitwarden, etc.) vía JWT firmados. **Requiere definir scope antes de codear**
+    (qué herramientas, dirección del JWT, IdP propio vs externo).
+
+### Qué se completó en sesión 2026-04-29
+
+| Fase | Descripción |
+|------|-------------|
+| 12 | Modal de edición de `displayName` + `email` en admin panel |
+| 13 | Re-auth con solo TOTP + soft logout + `DeviceHint` en localStorage |
+| 10 | Organigrama: `job_title`, `department`, `manager_user_id` + tab visual |
+| — | Botón panel admin en sidebar del chat (solo admins) |
 
 ### Producción actual (VPS Hostinger, 148.230.82.52)
 
@@ -151,11 +167,13 @@ pendiente de aprobación de directivos de Euromex. **Cutover es ~3 comandos de
 
 ## Próximos pasos
 
-**No hay pasos bloqueantes.** El proyecto está vivo y operacional. Solo hay
-mejoras opcionales que puede abordar una siguiente sesión si el usuario las
-pide:
+**No hay pasos bloqueantes.** El proyecto está vivo y operacional.
 
-1. **Migrar a dominio final `chat.grupoeuromex.com`** cuando los directivos
+1. **Fase 11 — SSO/JWT:** pendiente de definir scope con el usuario antes
+   de codear. Preguntas clave: ¿qué herramientas externas? ¿JWT emitido por
+   Euromex Chat o consumido desde un IdP externo (Google Workspace, etc.)?
+
+2. **Migrar a dominio final `chat.grupoeuromex.com`** cuando los directivos
    autoricen mover DNS (o cuando Hostinger publique los A records):
    ```bash
    sed -i 's|chat.148-230-82-52.sslip.io|chat.grupoeuromex.com|g; s|api.chat.148-230-82-52.sslip.io|api.chat.grupoeuromex.com|g' \
