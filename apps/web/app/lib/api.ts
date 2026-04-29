@@ -32,10 +32,54 @@ export function loadSession(): StoredSession | null {
 
 export function saveSession(session: StoredSession) {
   window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  // El device hint se guarda por separado y sobrevive a clearSession().
+  // La página de login lo lee para ofrecer re-auth con solo TOTP.
+  _saveDeviceHint({
+    deviceId: session.device.id,
+    username: session.user.username,
+    displayName: session.user.displayName,
+  });
 }
 
+/** Limpia el token de acceso sin tocar el device hint ni el keypair E2EE. */
 export function clearSession() {
   window.localStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+// ============================================================================
+// Device hint — persiste entre sesiones para el flujo de re-auth
+// ============================================================================
+
+const DEVICE_HINT_KEY = "euromex.device-hint";
+
+/** Datos mínimos del dispositivo conocido, usados en el login rápido. */
+export interface DeviceHint {
+  deviceId: string;
+  username: string;
+  displayName: string;
+}
+
+function _saveDeviceHint(hint: DeviceHint) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(DEVICE_HINT_KEY, JSON.stringify(hint));
+}
+
+export function loadDeviceHint(): DeviceHint | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(DEVICE_HINT_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as DeviceHint;
+  } catch {
+    return null;
+  }
+}
+
+/** Borra el hint — se llama cuando el device fue revocado o el usuario
+ *  elige "usar otra cuenta". */
+export function clearDeviceHint() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(DEVICE_HINT_KEY);
 }
 
 export async function api<T>(

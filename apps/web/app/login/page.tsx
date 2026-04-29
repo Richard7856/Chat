@@ -1,11 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { AlertTriangle, ArrowRight, Loader2, Lock, ShieldCheck } from "lucide-react";
-import { api, saveSession } from "../lib/api";
+import {
+  AlertTriangle,
+  ArrowRight,
+  ChevronRight,
+  Loader2,
+  Lock,
+  LogIn,
+  ShieldCheck,
+  UserX,
+} from "lucide-react";
+import {
+  api,
+  clearDeviceHint,
+  loadDeviceHint,
+  saveSession,
+  type DeviceHint,
+} from "../lib/api";
 import { ensureDeviceKeypair } from "../lib/keys";
+import { loadKeypair } from "../lib/keys";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -22,16 +38,80 @@ interface AuthSuccess {
   };
 }
 
+type LoginMode = "loading" | "quick" | "full";
+
 export default function LoginPage() {
   const router = useRouter();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+
+  // Modo del formulario: se determina en el useEffect inicial
+  const [mode, setMode] = useState<LoginMode>("loading");
+  const [hint, setHint] = useState<DeviceHint | null>(null);
+
+  // Campos compartidos entre ambos modos
   const [totpToken, setTotpToken] = useState("");
-  const [deviceName, setDeviceName] = useState(defaultDeviceName());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function onSubmit(e: React.FormEvent) {
+  // Campos exclusivos del modo completo
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [deviceName, setDeviceName] = useState(defaultDeviceName());
+
+  // Al montar: detectar si hay un device hint + keypair guardados en
+  // localStorage. Si ambos existen, el usuario puede entrar solo con TOTP.
+  useEffect(() => {
+    (async () => {
+      const h = loadDeviceHint();
+      if (h) {
+        const kp = await loadKeypair(h.deviceId);
+        if (kp) {
+          setHint(h);
+          setMode("quick");
+          return;
+        }
+        // Hay hint pero el keypair fue limpiado — borramos el hint huérfano
+        clearDeviceHint();
+      }
+      setMode("full");
+    })();
+  }, []);
+
+  // --------------------------------------------------------------------------
+  // Flujo rápido — solo TOTP, mismo deviceId
+  // --------------------------------------------------------------------------
+  async function onQuickSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!hint) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      const res = await api<AuthSuccess>("/auth/reauth", {
+        body: { deviceId: hint.deviceId, totpToken },
+      });
+      saveSession(res);
+      // ensureDeviceKeypair es idempotente — devuelve el keypair existente
+      await ensureDeviceKeypair(res.device.id);
+      router.push("/app/chat");
+    } catch (err) {
+      const code = err instanceof Error ? err.message : "error";
+      if (code === "session_revoked") {
+        // El device fue revocado por un admin → forzar login completo
+        clearDeviceHint();
+        setHint(null);
+        setMode("full");
+        setError("Tu sesión fue revocada por un administrador. Inicia sesión de nuevo.");
+      } else {
+        setError(humanizeError(code));
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Flujo completo — usuario + contraseña + TOTP + nombre de dispositivo
+  // --------------------------------------------------------------------------
+  async function onFullSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
@@ -43,10 +123,21 @@ export default function LoginPage() {
       await ensureDeviceKeypair(res.device.id);
       router.push("/app/chat");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "error");
+      setError(humanizeError(err instanceof Error ? err.message : "error"));
     } finally {
       setSubmitting(false);
     }
+  }
+
+  // --------------------------------------------------------------------------
+  // Estados de carga
+  // --------------------------------------------------------------------------
+  if (mode === "loading") {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-background">
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      </main>
+    );
   }
 
   return (
@@ -66,102 +157,201 @@ export default function LoginPage() {
 
         {/* Form card */}
         <div className="rounded-2xl border border-border bg-card p-6 shadow-xl shadow-black/20 animate-slide-up">
-          <h2 className="mb-1 text-lg font-semibold">Iniciar sesión</h2>
-          <p className="mb-6 text-sm text-muted-foreground">
-            Acceso restringido a miembros de Grupo Euromex.
-          </p>
 
-          <form onSubmit={onSubmit} className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="username">Usuario</Label>
-              <Input
-                id="username"
-                autoComplete="username"
-                autoCapitalize="none"
-                autoCorrect="off"
-                value={username}
-                onChange={(e) => setUsername(e.target.value.toLowerCase())}
-                placeholder="richard"
-                required
-                disabled={submitting}
-              />
-            </div>
+          {/* ---------------------------------------------------------------- */}
+          {/* Modo rápido: solo TOTP                                           */}
+          {/* ---------------------------------------------------------------- */}
+          {mode === "quick" && hint && (
+            <>
+              <div className="mb-6">
+                <h2 className="mb-1 text-lg font-semibold">Bienvenido de nuevo</h2>
+                <p className="text-sm text-muted-foreground">
+                  Confirma tu identidad con el código 2FA.
+                </p>
+              </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="password">Contraseña</Label>
-              <Input
-                id="password"
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                disabled={submitting}
-              />
-            </div>
+              {/* Identidad guardada (solo lectura) */}
+              <div className="mb-5 flex items-center gap-3 rounded-xl border border-border bg-muted/40 px-4 py-3">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary font-semibold text-sm">
+                  {hint.displayName.charAt(0).toUpperCase()}
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{hint.displayName}</p>
+                  <p className="text-xs text-muted-foreground">@{hint.username}</p>
+                </div>
+              </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="totp">Código 2FA (6 dígitos)</Label>
-              <Input
-                id="totp"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                pattern="\d{6}"
-                maxLength={6}
-                value={totpToken}
-                onChange={(e) => setTotpToken(e.target.value.replace(/\D/g, ""))}
-                placeholder="000000"
-                required
-                disabled={submitting}
-                className="tracking-[0.3em] text-center font-mono text-base"
-              />
-            </div>
+              <form onSubmit={onQuickSubmit} className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="totp-quick">Código 2FA (6 dígitos)</Label>
+                  <Input
+                    id="totp-quick"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="\d{6}"
+                    maxLength={6}
+                    value={totpToken}
+                    onChange={(e) => setTotpToken(e.target.value.replace(/\D/g, ""))}
+                    placeholder="000000"
+                    required
+                    disabled={submitting}
+                    autoFocus
+                    className="tracking-[0.3em] text-center font-mono text-base"
+                  />
+                </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="device">Nombre de este dispositivo</Label>
-              <Input
-                id="device"
-                value={deviceName}
-                onChange={(e) => setDeviceName(e.target.value)}
-                required
-                disabled={submitting}
-              />
-            </div>
+                {error && (
+                  <Alert variant="destructive">
+                    <AlertTriangle className="size-4" />
+                    <AlertDescription>{error}</AlertDescription>
+                  </Alert>
+                )}
 
-            {error && (
-              <Alert variant="destructive">
-                <AlertTriangle className="size-4" />
-                <AlertDescription>{humanizeError(error)}</AlertDescription>
-              </Alert>
-            )}
+                <Button type="submit" disabled={submitting} className="w-full" size="lg">
+                  {submitting ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      Entrando…
+                    </>
+                  ) : (
+                    <>
+                      <LogIn className="size-4" />
+                      Entrar
+                    </>
+                  )}
+                </Button>
+              </form>
 
-            <Button
-              type="submit"
-              disabled={submitting}
-              className="w-full"
-              size="lg"
-            >
-              {submitting ? (
-                <>
-                  <Loader2 className="size-4 animate-spin" />
-                  Entrando…
-                </>
-              ) : (
-                <>
-                  Entrar
-                  <ArrowRight className="size-4" />
-                </>
+              {/* Opción para cambiar de cuenta */}
+              <button
+                type="button"
+                onClick={() => {
+                  // Solo cambiamos modo — no borramos el hint ni el keypair.
+                  // El usuario puede volver al modo rápido si cancela.
+                  setMode("full");
+                  setError(null);
+                  setTotpToken("");
+                }}
+                className="mt-4 flex w-full items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <UserX className="size-3.5" />
+                Usar otra cuenta
+              </button>
+            </>
+          )}
+
+          {/* ---------------------------------------------------------------- */}
+          {/* Modo completo: usuario + contraseña + TOTP + dispositivo         */}
+          {/* ---------------------------------------------------------------- */}
+          {mode === "full" && (
+            <>
+              <h2 className="mb-1 text-lg font-semibold">Iniciar sesión</h2>
+              <p className="mb-6 text-sm text-muted-foreground">
+                Acceso restringido a miembros de Grupo Euromex.
+              </p>
+
+              <form onSubmit={onFullSubmit} className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="username">Usuario</Label>
+                  <Input
+                    id="username"
+                    autoComplete="username"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value.toLowerCase())}
+                    placeholder="richard"
+                    required
+                    disabled={submitting}
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="password">Contraseña</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    disabled={submitting}
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="totp">Código 2FA (6 dígitos)</Label>
+                  <Input
+                    id="totp"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="\d{6}"
+                    maxLength={6}
+                    value={totpToken}
+                    onChange={(e) => setTotpToken(e.target.value.replace(/\D/g, ""))}
+                    placeholder="000000"
+                    required
+                    disabled={submitting}
+                    className="tracking-[0.3em] text-center font-mono text-base"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="device">Nombre de este dispositivo</Label>
+                  <Input
+                    id="device"
+                    value={deviceName}
+                    onChange={(e) => setDeviceName(e.target.value)}
+                    required
+                    disabled={submitting}
+                  />
+                </div>
+
+                {error && (
+                  <Alert variant="destructive">
+                    <AlertTriangle className="size-4" />
+                    <AlertDescription>{error}</AlertDescription>
+                  </Alert>
+                )}
+
+                <Button
+                  type="submit"
+                  disabled={submitting}
+                  className="w-full"
+                  size="lg"
+                >
+                  {submitting ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      Entrando…
+                    </>
+                  ) : (
+                    <>
+                      Entrar
+                      <ArrowRight className="size-4" />
+                    </>
+                  )}
+                </Button>
+              </form>
+
+              {/* Volver al modo rápido si había un hint (usuario canceló) */}
+              {hint && (
+                <button
+                  type="button"
+                  onClick={() => { setMode("quick"); setError(null); setTotpToken(""); }}
+                  className="mt-4 flex w-full items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <ChevronRight className="size-3.5" />
+                  Volver a @{hint.username}
+                </button>
               )}
-            </Button>
-          </form>
+            </>
+          )}
         </div>
 
         <p className="mt-6 text-center text-sm text-muted-foreground">
           ¿Primera vez?{" "}
-          <Link
-            href="/enroll"
-            className="font-medium text-primary hover:underline"
-          >
+          <Link href="/enroll" className="font-medium text-primary hover:underline">
             Usa tu código de invitación
           </Link>
         </p>

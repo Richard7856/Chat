@@ -110,6 +110,18 @@ export const LoginRequestSchema = z.object({
 });
 export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 
+/**
+ * Re-autenticación de dispositivo ya enrollado.
+ * Permite renovar el JWT usando solo el TOTP — sin re-ingresar
+ * usuario ni contraseña y sin crear un device nuevo. El deviceId
+ * debe corresponder a un device 'active' en DB.
+ */
+export const ReauthRequestSchema = z.object({
+  deviceId: UuidSchema,
+  totpToken: TotpTokenSchema,
+});
+export type ReauthRequest = z.infer<typeof ReauthRequestSchema>;
+
 export const MeResponseSchema = z.object({
   user: z.object({
     id: z.string().uuid(),

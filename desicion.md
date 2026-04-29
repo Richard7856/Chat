@@ -115,10 +115,9 @@ sudo systemctl start euromex-backup.service
 
 ## Estado actual
 
-- **Fase:** 12 — Edición de perfil (displayName + email) desde admin UI ✅
+- **Fase:** 13 — Re-auth TOTP + soft logout + multi-dispositivo ✅
 - **Estado:** producción corriendo + features post-plan en expansión
-  continua (Fase 8.1 avisos de seguridad, 8.2 super admin, 9 panel admin,
-  12 edición de perfil).
+  continua (Fase 8.1, 8.2, 9, 12, 13).
 - **Última actualización:** 2026-04-29
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
@@ -186,6 +185,54 @@ pide:
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-04-29] Fase 13 — Re-auth con solo TOTP + soft logout
+
+- **Problema que resuelve:** cada login creaba un device nuevo, con keypair
+  nuevo → el usuario no podía descifrar mensajes anteriores. Además, el
+  formulario exigía usuario + contraseña + TOTP + nombre de dispositivo
+  cada vez que expiraba el JWT (8 h).
+- **Solución implementada:**
+  1. **Endpoint `POST /auth/reauth`** (nuevo): recibe `{ deviceId, totpToken }`.
+     Verifica TOTP para el usuario dueño de ese device. Si user + device están
+     'active', devuelve nuevo JWT firmado con el **mismo** `deviceId`. No crea
+     registro nuevo en `devices`, por lo que el keypair E2EE en localStorage
+     sigue siendo válido → todos los mensajes anteriores son descifrables.
+  2. **Soft logout:** `/auth/logout` ya NO revoca el device en DB; solo registra
+     el evento en `audit_log`. El cliente borra el access token pero conserva
+     el keypair y el device hint. Si se necesita revocar (teléfono perdido,
+     etc.), el admin usa el panel admin → Revocar dispositivo.
+  3. **Device hint en localStorage** (`euromex.device-hint`): guarda `deviceId`,
+     `username` y `displayName` como clave separada de `euromex.session`. Sobrevive
+     a `clearSession()`. La página de login lo lee para detectar si puede ofrecer
+     el formulario rápido.
+  4. **Login page en dos modos:**
+     - **Modo rápido** (default cuando hay hint + keypair): muestra avatar con
+       nombre, solo el campo TOTP. Botón "Usar otra cuenta" para cambiar.
+     - **Modo completo** (sin hint, o al elegir otra cuenta): formulario original
+       con todos los campos.
+  5. **Mensaje `no_envelope` mejorado:** "🔒 Mensaje anterior a este dispositivo"
+     en lugar del críptico "no puede descifrar". Deja claro que no es un error
+     sino el comportamiento esperado de E2EE.
+- **Trade-offs de seguridad:**
+  - Antes: logout = device revocado. Ahora: logout = solo token limpiado.
+  - Modelo de amenaza asumido: atacante con acceso al localStorage del
+    navegador también tiene acceso a la sesión activa y al authenticator
+    (o puede poner un keylogger). El device revocado explícitamente no añade
+    protección práctica ante ese atacante.
+  - Protección ante robo de dispositivo: admin revoca desde el panel.
+    La revocación es inmediata (el middleware `requireAuth` verifica estado
+    del device en cada request).
+- **Impacto:**
+  - `packages/shared/src/schemas.ts`: `ReauthRequestSchema`.
+  - `apps/api/src/routes/auth.ts`: endpoint `POST /auth/reauth`; logout sin
+    `UPDATE devices SET status = 'revoked'`.
+  - `apps/web/app/lib/api.ts`: `DeviceHint`, `loadDeviceHint`,
+    `clearDeviceHint`; `saveSession` persiste el hint automáticamente.
+  - `apps/web/app/login/page.tsx`: dos modos (`quick` / `full`), `useEffect`
+    de detección, handler `onQuickSubmit`, fallback a `full` si `session_revoked`.
+  - `apps/web/app/app/chat/page.tsx`: `onLogout` sin `clearKeypair` ni
+    revocación server-side; mensaje `no_envelope` más descriptivo.
 
 ### [2026-04-29] Fase 12 — Edición de perfil desde admin UI
 

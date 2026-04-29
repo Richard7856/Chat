@@ -4,6 +4,7 @@ import {
   EnrollBeginRequestSchema,
   EnrollCompleteRequestSchema,
   LoginRequestSchema,
+  ReauthRequestSchema,
   type AuthSuccessResponse,
   type EnrollBeginResponse,
   type MeResponse,
@@ -323,6 +324,76 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   // --------------------------------------------------------------------------
+  // POST /auth/reauth — renueva JWT para un dispositivo ya enrollado
+  //
+  // Permite que el usuario vuelva a entrar con solo el TOTP, sin re-ingresar
+  // contraseña ni crear un device nuevo. Esto preserva el deviceId (y por
+  // tanto el keypair E2EE) entre sesiones → los mensajes anteriores siguen
+  // siendo descifrables.
+  //
+  // Condición de uso: el device debe estar 'active' en DB. Si fue revocado
+  // por un admin, este endpoint devuelve session_revoked y el cliente debe
+  // mostrar el formulario completo.
+  // --------------------------------------------------------------------------
+  app.post("/auth/reauth", async (req, reply): Promise<AuthSuccessResponse> => {
+    const parsed = ReauthRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
+    }
+    const { deviceId, totpToken } = parsed.data;
+
+    const r = await pool.query<{
+      user_id: string;
+      username: string;
+      display_name: string;
+      totp_secret_enc: Buffer;
+      role: "user" | "admin";
+      user_status: string;
+      device_status: string;
+      device_name: string;
+      platform: string;
+    }>(
+      `SELECT u.id AS user_id, u.username, u.display_name, u.totp_secret_enc,
+              u.role, u.status AS user_status, d.status AS device_status,
+              d.device_name, d.platform
+         FROM devices d
+         JOIN users u ON u.id = d.user_id
+        WHERE d.id = $1`,
+      [deviceId],
+    );
+
+    const row = r.rows[0];
+    // Cualquier estado que no sea user+device activos → force full login
+    if (!row || row.user_status !== "active" || row.device_status !== "active") {
+      return reply.code(401).send({ error: "session_revoked" });
+    }
+
+    const totpSecret = decryptSecret(masterKey, row.totp_secret_enc).toString("utf8");
+    if (!verifyTotp(totpSecret, totpToken)) {
+      await audit(req, {
+        userId: row.user_id,
+        deviceId,
+        action: "login.reauth_totp_failed",
+      });
+      return reply.code(401).send({ error: "invalid_totp" });
+    }
+
+    await audit(req, {
+      userId: row.user_id,
+      deviceId,
+      action: "login.reauth",
+      metadata: { platform: row.platform },
+    });
+
+    const token = app.jwt.sign({ sub: row.user_id, did: deviceId, role: row.role });
+    return buildAuthResponse(
+      token,
+      { id: row.user_id, username: row.username, display_name: row.display_name, role: row.role },
+      { id: deviceId, device_name: row.device_name, platform: row.platform },
+    );
+  });
+
+  // --------------------------------------------------------------------------
   // GET /auth/me
   // --------------------------------------------------------------------------
   app.get(
@@ -369,17 +440,17 @@ export async function authRoutes(app: FastifyInstance) {
   );
 
   // --------------------------------------------------------------------------
-  // POST /auth/logout — revoca el dispositivo actual
+  // POST /auth/logout — cierre de sesión suave (no revoca el device)
+  //
+  // Solo registra el evento en audit_log. El device queda 'active' para
+  // permitir re-auth con solo TOTP la próxima vez. Si se necesita revocar
+  // un dispositivo (p.ej. teléfono perdido), el admin usa el panel admin
+  // → Usuarios → Dispositivos → Revocar.
   // --------------------------------------------------------------------------
   app.post(
     "/auth/logout",
     { preHandler: [requireAuth] },
     async (req, reply) => {
-      await pool.query(
-        `UPDATE devices SET status = 'revoked', revoked_at = now()
-         WHERE id = $1 AND status = 'active'`,
-        [req.session!.did],
-      );
       await audit(req, {
         userId: req.session!.sub,
         deviceId: req.session!.did,

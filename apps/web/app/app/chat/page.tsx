@@ -414,11 +414,15 @@ export default function ChatPage() {
   }
 
   async function onLogout() {
+    // Logout suave: auditamos en el servidor pero NO revocamos el device
+    // ni borramos el keypair E2EE. Esto permite que la próxima visita
+    // muestre el formulario de login rápido (solo TOTP).
+    // Si el device debe revocarse (teléfono perdido, etc.), el admin lo
+    // hace desde el panel admin → Usuarios → Dispositivos → Revocar.
     try {
       await api("/auth/logout", { method: "POST", auth: true });
     } catch {}
-    if (me) clearKeypair(me.device.id);
-    clearSession();
+    clearSession(); // solo borra el token de acceso; hint + keypair persisten
     closeSocket();
     router.replace("/login");
   }
@@ -818,9 +822,11 @@ function MessageBody({ msg, mine }: { msg: RenderedMessage; mine: boolean }) {
     );
   }
   if (msg.status === "no_envelope") {
+    // El mensaje fue cifrado antes de que este dispositivo existiera en DB.
+    // Es comportamiento esperado en E2EE — no es un error.
     return (
-      <em className="opacity-80">
-        🔒 este dispositivo no puede descifrar este mensaje
+      <em className="opacity-60 text-xs">
+        🔒 Mensaje anterior a este dispositivo
       </em>
     );
   }
