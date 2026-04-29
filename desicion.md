@@ -115,10 +115,11 @@ sudo systemctl start euromex-backup.service
 
 ## Estado actual
 
-- **Fase:** 9 — Panel admin web (usuarios, invitaciones, audit log) ✅
+- **Fase:** 12 — Edición de perfil (displayName + email) desde admin UI ✅
 - **Estado:** producción corriendo + features post-plan en expansión
-  continua (Fase 8.1 avisos de seguridad, 8.2 super admin, 9 panel admin).
-- **Última actualización:** 2026-04-19
+  continua (Fase 8.1 avisos de seguridad, 8.2 super admin, 9 panel admin,
+  12 edición de perfil).
+- **Última actualización:** 2026-04-29
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
 - **Fases futuras sugeridas (no obligatorias):**
@@ -185,6 +186,33 @@ pide:
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-04-29] Fase 12 — Edición de perfil desde admin UI
+
+- **Qué se decidió:** agregar modal de edición de `displayName` y `email` en
+  la pestaña Usuarios del panel admin. Un botón de lápiz (Pencil) al final de
+  cada fila abre el dialog. Al guardar, solo se envían los campos que realmente
+  cambiaron (patch mínimo).
+- **Por qué:** hasta aquí, cambiar el nombre visible o email de un usuario
+  requería acceso SQL directo. Con ~25 usuarios esto ocurre pocas veces, pero
+  es operativamente molesto. El backend ya tenía soporte completo
+  (`AdminUserUpdateRequestSchema`, `updateUserAsAdmin`, `PATCH /admin/users/:id`)
+  — solo faltaba la UI.
+- **Decisiones de diseño:**
+  - Modal (no edición inline) porque los campos de texto largos quedan incómodos
+    en la celda de una tabla; un dialog da espacio y contexto.
+  - Validación en cliente espeja las restricciones del schema Zod del server
+    (displayName min 1 / max 64; email válido o vacío para borrar).
+  - Email vacío → se envía `null` al servidor, lo que limpia el campo en DB.
+  - El admin SÍ puede editar su propio displayName/email (no hay lockout risk
+    en esos campos, a diferencia de role/status).
+  - El modal muestra el error dentro del dialog para que el admin pueda
+    corregir sin perder el contexto de qué usuario estaba editando.
+- **Impacto:** solo `apps/web/app/app/admin/users-tab.tsx`. Backend sin cambios.
+- **Fases sugeridas pendientes:**
+  - 10: organigrama + campos de perfil extendido (job_title, department,
+    manager_user_id) — prerequisito: este modal de edición.
+  - 11: SSO / JWT firmados para herramientas externas — requiere más scope.
 
 ### [2026-04-19] Fase 9 — Panel admin web (usuarios, invitaciones, audit)
 
