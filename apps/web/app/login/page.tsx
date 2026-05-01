@@ -153,17 +153,17 @@ export default function LoginPage() {
   return (
     <main className="relative min-h-screen bg-hero">
       <div className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6 py-12">
-        {/* Brand — logo oficial Euromex */}
+        {/* Brand — el logo oficial ya contiene el wordmark "EurOMex". Mantener
+            solo el logo + tagline; sin "Euromex Chat" redundante. */}
         <div className="mb-8 flex flex-col items-center text-center">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/logo.png"
             alt="Euromex"
-            className="mb-4 h-16 w-auto select-none"
+            className="mb-3 h-12 w-auto select-none"
             draggable={false}
           />
-          <h1 className="text-3xl font-bold tracking-tight">Euromex Chat</h1>
-          <p className="mt-2 flex items-center gap-1.5 text-sm text-muted-foreground">
+          <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
             <ShieldCheck className="size-4 text-primary" />
             Chat interno cifrado de extremo a extremo
           </p>

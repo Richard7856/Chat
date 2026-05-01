@@ -89,40 +89,51 @@ export function ActivityCard({ payload, currentUserId }: Props) {
   const confirmedCount = participants.filter((p) => p.rsvpStatus === "confirmed").length;
 
   return (
-    <div className="w-full rounded-xl border border-primary/20 bg-primary/5 p-3">
+    // Card standalone con acento morado (categoría "actividad").
+    // Diseño paralelo al TaskCard para coherencia visual.
+    <div className="card-elevated w-full max-w-sm overflow-hidden border-l-4 border-l-[hsl(var(--accent-activity))]">
       {/* Encabezado */}
-      <div className="mb-2 flex items-start gap-2">
-        <Calendar className="mt-0.5 size-4 shrink-0 text-primary" />
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold">{activity?.title ?? payload.title}</div>
-          <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-            <span className="flex items-center gap-1">
-              <Clock className="size-3" />
-              {dateStr} · {timeStr}
-            </span>
-            {(activity?.location ?? payload.location) && (
+      <div className="px-3 pt-3 pb-2">
+        <div className="flex items-start gap-2">
+          <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md bg-[hsl(var(--accent-activity-soft))]">
+            <Calendar className="size-3.5 text-[hsl(var(--accent-activity))]" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--accent-activity))]">
+              Actividad
+            </div>
+            <div className="mt-0.5 text-sm font-semibold text-card-foreground">
+              {activity?.title ?? payload.title}
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
               <span className="flex items-center gap-1">
-                <MapPin className="size-3" />
-                {activity?.location ?? payload.location}
+                <Clock className="size-3" />
+                {dateStr} · {timeStr}
               </span>
-            )}
+              {(activity?.location ?? payload.location) && (
+                <span className="flex items-center gap-1">
+                  <MapPin className="size-3" />
+                  {activity?.location ?? payload.location}
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
       {/* Participantes */}
       {!loading && participants.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1">
+        <div className="px-3 pb-2 flex flex-wrap gap-1">
           {participants.map((p) => (
             <span
               key={p.userId}
               className={[
                 "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
                 p.rsvpStatus === "confirmed"
-                  ? "bg-green-500/15 text-green-700"
+                  ? "bg-[hsl(var(--accent-task-soft))] text-[hsl(var(--accent-task))]"
                   : p.rsvpStatus === "declined"
-                    ? "bg-red-500/15 text-red-700"
-                    : "bg-secondary text-muted-foreground",
+                    ? "bg-destructive/10 text-destructive"
+                    : "bg-muted text-muted-foreground",
               ].join(" ")}
             >
               {p.rsvpStatus === "confirmed" ? (
@@ -139,57 +150,60 @@ export function ActivityCard({ payload, currentUserId }: Props) {
       )}
 
       {loading && (
-        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <div className="px-3 pb-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <Loader2 className="size-3 animate-spin" />
           Cargando estado…
         </div>
       )}
 
-      {/* Estado resumido */}
+      {/* Footer — resumen + acciones RSVP */}
       {!loading && participants.length > 0 && (
-        <div className="mb-2 text-[11px] text-muted-foreground">
-          {confirmedCount} de {participants.length} confirmados
-        </div>
-      )}
+        <div className="border-t border-border bg-muted/40 px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-medium text-muted-foreground">
+              {confirmedCount} de {participants.length} confirmados
+            </span>
 
-      {/* Botones RSVP */}
-      {isParticipant && myRsvp === "pending" && (
-        <div className="flex gap-1.5">
-          <Button
-            size="sm"
-            className="h-7 gap-1 text-xs"
-            onClick={() => handleRsvp("confirmed")}
-            disabled={rsvping}
-          >
-            {rsvping ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
-            Confirmar
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 gap-1 text-xs text-destructive hover:text-destructive"
-            onClick={() => handleRsvp("declined")}
-            disabled={rsvping}
-          >
-            <XCircle className="size-3" />
-            Declinar
-          </Button>
-        </div>
-      )}
+            {isParticipant && myRsvp === "pending" && activity?.status !== "cancelled" && (
+              <div className="flex gap-1.5">
+                <Button
+                  size="sm"
+                  className="h-7 gap-1 bg-[hsl(var(--accent-activity))] text-xs text-white hover:bg-[hsl(var(--accent-activity))]/90"
+                  onClick={() => handleRsvp("confirmed")}
+                  disabled={rsvping}
+                >
+                  {rsvping ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
+                  Confirmar
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 gap-1 text-xs text-muted-foreground hover:text-destructive"
+                  onClick={() => handleRsvp("declined")}
+                  disabled={rsvping}
+                >
+                  <XCircle className="size-3" />
+                  Declinar
+                </Button>
+              </div>
+            )}
 
-      {isParticipant && myRsvp === "confirmed" && (
-        <div className="flex items-center gap-1 text-[11px] text-green-700">
-          <CheckCircle2 className="size-3" /> Confirmado
-        </div>
-      )}
-      {isParticipant && myRsvp === "declined" && (
-        <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
-          <XCircle className="size-3" /> Declinado
+            {isParticipant && myRsvp === "confirmed" && (
+              <span className="flex items-center gap-1 text-[11px] font-medium text-[hsl(var(--accent-task))]">
+                <CheckCircle2 className="size-3" /> Confirmado
+              </span>
+            )}
+            {isParticipant && myRsvp === "declined" && (
+              <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                <XCircle className="size-3" /> Declinado
+              </span>
+            )}
+          </div>
         </div>
       )}
 
       {activity?.status === "cancelled" && (
-        <div className="mt-1 text-[11px] font-medium text-destructive">
+        <div className="border-t border-border bg-destructive/5 px-3 py-1.5 text-[11px] font-medium text-destructive">
           Actividad cancelada
         </div>
       )}

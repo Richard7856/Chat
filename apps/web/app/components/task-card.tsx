@@ -85,46 +85,56 @@ export function TaskCard({ payload, currentUserId }: Props) {
     : null;
 
   return (
-    <div className="w-full rounded-xl border border-green-500/20 bg-green-500/5 p-3">
+    // Card standalone — usa bg-card (blanco puro) + acento verde a la
+    // izquierda. Funciona dentro de cualquier contenedor (sender bubble
+    // azul, receiver bubble gris, calendario, etc.) sin perder contraste.
+    <div className="card-elevated w-full max-w-sm overflow-hidden border-l-4 border-l-[hsl(var(--accent-task))]">
       {/* Encabezado */}
-      <div className="mb-2 flex items-start gap-2">
-        <CheckSquare className="mt-0.5 size-4 shrink-0 text-green-700" />
-        <div className="min-w-0 flex-1">
-          <div
-            className={[
-              "text-sm font-semibold",
-              allDone ? "line-through opacity-60" : "",
-            ].join(" ")}
-          >
-            {task?.title ?? payload.title}
+      <div className="px-3 pt-3 pb-2">
+        <div className="flex items-start gap-2">
+          <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md bg-[hsl(var(--accent-task-soft))]">
+            <CheckSquare className="size-3.5 text-[hsl(var(--accent-task))]" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[hsl(var(--accent-task))]">
+              Tarea
+            </div>
+            <div
+              className={[
+                "mt-0.5 text-sm font-semibold text-card-foreground",
+                allDone ? "line-through opacity-60" : "",
+              ].join(" ")}
+            >
+              {task?.title ?? payload.title}
+            </div>
+            {task?.description && (
+              <div className="mt-1 text-xs text-muted-foreground line-clamp-3">
+                {task.description}
+              </div>
+            )}
+            {dueDateStr && (
+              <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Calendar className="size-3" />
+                Vence: {dueDateStr}
+              </div>
+            )}
           </div>
-          {(task?.description) && (
-            <div className="mt-0.5 text-[11px] text-muted-foreground">
-              {task.description}
-            </div>
-          )}
-          {dueDateStr && (
-            <div className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground">
-              <Calendar className="size-3" />
-              Vence: {dueDateStr}
-            </div>
-          )}
         </div>
       </div>
 
       {/* Asignados */}
       {!loading && assignees.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1">
+        <div className="px-3 pb-2 flex flex-wrap gap-1">
           {assignees.map((a) => (
             <span
               key={a.userId}
               className={[
                 "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
                 a.status === "completed"
-                  ? "bg-green-500/15 text-green-700"
+                  ? "bg-[hsl(var(--accent-task-soft))] text-[hsl(var(--accent-task))]"
                   : a.status === "in_progress"
-                    ? "bg-blue-500/15 text-blue-700"
-                    : "bg-secondary text-muted-foreground",
+                    ? "bg-blue-50 text-blue-700"
+                    : "bg-muted text-muted-foreground",
               ].join(" ")}
             >
               {a.status === "completed" ? (
@@ -139,43 +149,47 @@ export function TaskCard({ payload, currentUserId }: Props) {
       )}
 
       {loading && (
-        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <div className="px-3 pb-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <Loader2 className="size-3 animate-spin" />
           Cargando estado…
         </div>
       )}
 
+      {/* Footer — barra de progreso + acción */}
       {!loading && assignees.length > 0 && (
-        <div className="mb-2 text-[11px] text-muted-foreground">
-          {completedCount} de {assignees.length} completados
-        </div>
-      )}
+        <div className="border-t border-border bg-muted/40 px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-medium text-muted-foreground">
+              {completedCount} de {assignees.length} completados
+            </span>
 
-      {/* Botón completar */}
-      {isAssignee && myStatus !== "completed" && (
-        <Button
-          size="sm"
-          className="h-7 gap-1 bg-green-600 text-xs hover:bg-green-700"
-          onClick={handleComplete}
-          disabled={completing}
-        >
-          {completing ? (
-            <Loader2 className="size-3 animate-spin" />
-          ) : (
-            <Check className="size-3" />
-          )}
-          Completar mi parte
-        </Button>
-      )}
+            {isAssignee && myStatus !== "completed" && task?.status !== "cancelled" && (
+              <Button
+                size="sm"
+                className="h-7 gap-1 bg-[hsl(var(--accent-task))] text-xs text-white hover:bg-[hsl(var(--accent-task))]/90"
+                onClick={handleComplete}
+                disabled={completing}
+              >
+                {completing ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : (
+                  <Check className="size-3" />
+                )}
+                Completar mi parte
+              </Button>
+            )}
 
-      {isAssignee && myStatus === "completed" && (
-        <div className="flex items-center gap-1 text-[11px] text-green-700">
-          <Check className="size-3" /> Tu parte está completada
+            {isAssignee && myStatus === "completed" && (
+              <span className="flex items-center gap-1 text-[11px] font-medium text-[hsl(var(--accent-task))]">
+                <Check className="size-3" /> Hecho
+              </span>
+            )}
+          </div>
         </div>
       )}
 
       {task?.status === "cancelled" && (
-        <div className="mt-1 text-[11px] font-medium text-destructive">
+        <div className="border-t border-border bg-destructive/5 px-3 py-1.5 text-[11px] font-medium text-destructive">
           Tarea cancelada
         </div>
       )}

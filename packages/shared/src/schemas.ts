@@ -185,6 +185,12 @@ export const ConversationSchema = z.object({
       id: z.string().uuid(),
       senderUserId: z.string().uuid(),
       content: z.string().nullable(),
+      /**
+       * content_type del último mensaje. El cliente lo usa para renderizar
+       * un preview amigable en el sidebar (ej. "📋 Nueva tarea: Foo" en vez
+       * del JSON crudo).
+       */
+      contentType: z.string(),
       createdAt: z.string().datetime(),
     })
     .nullable(),

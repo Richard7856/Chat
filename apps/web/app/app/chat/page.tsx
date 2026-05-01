@@ -71,6 +71,7 @@ import {
   dmPeer,
   formatHour,
   formatWhen,
+  previewLastMessage,
 } from "./chat-utils";
 
 /** Convierte una VAPID public key (base64url) al Uint8Array que necesita PushManager. */
@@ -134,8 +135,12 @@ export default function ChatPage() {
   // Fase 18: presencia y read receipts
   // presenceMap: userId → { online, lastSeenAt }
   const [presenceMap, setPresenceMap] = useState<Map<string, { online: boolean; lastSeenAt: string | null }>>(new Map());
-  // Fase 19: push notifications permission state
-  const [pushState, setPushState] = useState<"unknown" | "granted" | "denied" | "subscribing">("unknown");
+  // Fase 19: push notifications permission state.
+  // Default a "granted" para que el banner NO parpadee al cargar la página
+  // (el useEffect que sigue lee Notification.permission y corrige el estado).
+  const [pushState, setPushState] = useState<"unknown" | "granted" | "denied" | "subscribing">("granted");
+  // Si el usuario ya descartó el banner manualmente, recordarlo en localStorage.
+  const [pushDismissed, setPushDismissed] = useState(false);
   // Fase 19: @mention autocomplete
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -296,6 +301,12 @@ export default function ChatPage() {
           ? "denied"
           : "unknown",
       );
+      // Recordar si el usuario ya descartó el banner antes
+      try {
+        if (localStorage.getItem("euromex.push.dismissed") === "1") {
+          setPushDismissed(true);
+        }
+      } catch {}
     }
   }, []);
 
@@ -325,6 +336,7 @@ export default function ChatPage() {
           id: msg.id,
           senderUserId: msg.senderUserId,
           content: rendered.plaintext,
+          contentType: msg.contentType,
           createdAt: msg.createdAt,
         };
         if (msg.conversationId !== selectedIdRef.current) {
@@ -720,18 +732,16 @@ export default function ChatPage() {
           selectedId ? "hidden md:flex" : "flex",
         ].join(" ")}
       >
-        {/* Brand strip: logo oficial Euromex */}
-        <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
+        {/* Brand strip: solo logo (el logo ya contiene "EurOMex", el texto
+            adicional era redundante y robaba espacio en pantalla) */}
+        <div className="flex items-center justify-center border-b border-border px-4 py-2.5">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/logo.png"
             alt="Euromex"
-            className="h-7 w-auto select-none"
+            className="h-6 w-auto select-none"
             draggable={false}
           />
-          <span className="text-sm font-semibold tracking-tight">
-            Euromex Chat
-          </span>
         </div>
 
         {/* Header sidebar: usuario actual */}
@@ -773,9 +783,9 @@ export default function ChatPage() {
           </Button>
         </div>
 
-        {/* Search + new */}
-        <div className="space-y-2 border-b border-border px-3 py-3">
-          <div className="relative">
+        {/* Search + nueva (icon-only para no dominar visualmente el sidebar) */}
+        <div className="flex items-center gap-2 border-b border-border px-3 py-2.5">
+          <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={convQuery}
@@ -787,11 +797,12 @@ export default function ChatPage() {
           <Button
             type="button"
             onClick={() => setShowNew(true)}
-            size="sm"
-            className="w-full"
+            size="icon"
+            className="h-9 w-9 shrink-0"
+            title="Nueva conversación"
+            aria-label="Nueva conversación"
           >
             <Plus className="size-4" />
-            Nueva conversación
           </Button>
         </div>
 
@@ -859,9 +870,7 @@ export default function ChatPage() {
                         unread ? "text-foreground" : "text-muted-foreground",
                       ].join(" ")}
                     >
-                      {conv.lastMessage
-                        ? (conv.lastMessage.content ?? "🔒 mensaje cifrado")
-                        : "(sin mensajes)"}
+                      {previewLastMessage(conv.lastMessage)}
                     </span>
                     {unread && (
                       <Badge variant="default" className="shrink-0 px-1.5 py-0 text-[10px]">
@@ -947,24 +956,30 @@ export default function ChatPage() {
 
             <SecurityBanner conversationId={selectedConv.id} />
 
-            {/* Fase 19: Banner de notificaciones push (solo si no se ha dado permiso) */}
-            {pushState === "unknown" && (
+            {/* Fase 19: Banner de notificaciones push.
+                Solo se muestra si: (a) el usuario aún no decidió y
+                (b) no descartó el banner antes (persiste en localStorage). */}
+            {pushState === "unknown" && !pushDismissed && (
               <div className="flex items-center justify-between gap-3 border-b border-border bg-primary/5 px-4 py-2 text-xs text-foreground">
-                <div className="flex items-center gap-2">
-                  <Bell size={13} className="text-primary" />
-                  <span>Activa las notificaciones para recibir mensajes cuando no estés en la app.</span>
+                <div className="flex items-center gap-2 min-w-0">
+                  <Bell size={13} className="text-primary shrink-0" />
+                  <span className="truncate">Activa las notificaciones para no perder mensajes.</span>
                 </div>
-                <div className="flex gap-2 shrink-0">
+                <div className="flex gap-2 shrink-0 items-center">
                   <button
-                    className="font-medium text-primary underline-offset-2 hover:underline"
+                    className="rounded-md bg-primary px-2 py-0.5 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
                     onClick={() => void subscribeToPush()}
                   >
                     Activar
                   </button>
                   <button
                     className="text-muted-foreground hover:text-foreground"
-                    onClick={() => setPushState("denied")}
+                    onClick={() => {
+                      setPushDismissed(true);
+                      try { localStorage.setItem("euromex.push.dismissed", "1"); } catch {}
+                    }}
                     aria-label="Descartar"
+                    title="No volver a preguntar"
                   >
                     <BellOff size={13} />
                   </button>
@@ -1003,6 +1018,58 @@ export default function ChatPage() {
                     (m) => m.lastReadAt && m.lastReadAt >= msg.createdAt,
                   );
                   const isStarred = starredIds.has(msg.id);
+                  // Las cards interactivas (tarea/actividad) tienen su propio
+                  // diseño y NO deben envolverse en bubble coloreado — se
+                  // renderizan standalone para mantener legibilidad y
+                  // contraste consistente.
+                  const isInteractiveCard =
+                    msg.contentType === ACTIVITY_CONTENT_TYPE ||
+                    msg.contentType === TASK_CONTENT_TYPE;
+
+                  if (isInteractiveCard) {
+                    return (
+                      <div
+                        key={msg.id}
+                        className={[
+                          "group flex gap-2 items-end",
+                          mine ? "justify-end" : "justify-start",
+                        ].join(" ")}
+                      >
+                        {!mine && selectedConv.type === "group" && (
+                          <Avatar
+                            size="xs"
+                            username={sender?.username ?? "?"}
+                            displayName={sender?.displayName ?? "?"}
+                            className="mb-1"
+                          />
+                        )}
+                        <div className="flex flex-col gap-0.5 max-w-[85%] md:max-w-[70%]">
+                          {!mine && selectedConv.type === "group" && (
+                            <div className="px-1 text-[11px] font-semibold text-primary">
+                              {sender?.displayName ?? "?"}
+                            </div>
+                          )}
+                          <MessageBody msg={msg} mine={mine} currentUserId={me.user.id} />
+                          <div
+                            className={[
+                              "px-1 flex items-center gap-1 text-[10px] text-muted-foreground",
+                              mine ? "justify-end" : "justify-start",
+                            ].join(" ")}
+                          >
+                            {formatHour(msg.createdAt)}
+                            {mine && (
+                              <span
+                                title={readByAll ? "Visto por todos" : readByAny ? "Visto" : "Enviado"}
+                                className={readByAny ? "text-blue-600" : "opacity-60"}
+                              >
+                                {readByAny ? "✓✓" : "✓"}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
 
                   return (
                     <div
@@ -1326,11 +1393,14 @@ function MessageBody({ msg, mine, currentUserId }: { msg: RenderedMessage; mine:
     );
   }
   if (msg.status === "no_envelope") {
+    // Placeholder cuando el mensaje fue enviado antes de que existiera este
+    // device. Necesita opacity alto (90%) para ser legible en bubbles del
+    // emisor (texto blanco sobre azul) — un 60% se veía casi invisible.
     return (
-      <em className="opacity-60 text-xs">
+      <em className="opacity-90 text-xs">
         🔒 Mensaje anterior a este dispositivo
       </em>
     );
   }
-  return <em className="opacity-80">⚠ error al descifrar</em>;
+  return <em className="opacity-90">⚠ error al descifrar</em>;
 }

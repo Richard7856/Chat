@@ -66,6 +66,16 @@ const config: Config = {
           DEFAULT: "hsl(var(--success))",
           foreground: "hsl(var(--success-foreground))",
         },
+        // Acentos por categoría — Fase 21 refresh visual
+        "accent-task": {
+          DEFAULT: "hsl(var(--accent-task))",
+          soft: "hsl(var(--accent-task-soft))",
+        },
+        "accent-activity": {
+          DEFAULT: "hsl(var(--accent-activity))",
+          soft: "hsl(var(--accent-activity-soft))",
+        },
+        "accent-warning": "hsl(var(--accent-warning))",
       },
       borderRadius: {
         lg: "var(--radius)",

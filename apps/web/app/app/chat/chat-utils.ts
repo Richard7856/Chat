@@ -9,7 +9,12 @@ import {
   FileAudio,
   type LucideIcon,
 } from "lucide-react";
-import type { Conversation } from "@euromex/shared";
+import {
+  ACTIVITY_CONTENT_TYPE,
+  SYSTEM_CONTENT_TYPE,
+  TASK_CONTENT_TYPE,
+  type Conversation,
+} from "@euromex/shared";
 
 /** Título visible de una conversación desde la perspectiva del usuario. */
 export function displayTitle(conv: Conversation, meId: string): string {
@@ -51,6 +56,46 @@ export function formatHour(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/**
+ * Genera un preview amigable del último mensaje para la lista lateral.
+ *
+ * Razón: para mensajes E2EE el server nunca tuvo el plaintext, así que
+ * `content` es null. Para tareas/actividades/system el `content` es JSON
+ * crudo, que ANTES se mostraba completo (filtraba IDs internos y se veía
+ * como basura). Ahora detectamos el content_type y mostramos el título o
+ * una etiqueta amigable.
+ */
+export function previewLastMessage(
+  last: { content: string | null; contentType: string } | null,
+): string {
+  if (!last) return "(sin mensajes)";
+
+  // Mensajes interactivos: parsear el JSON y mostrar el título.
+  if (last.contentType === TASK_CONTENT_TYPE && last.content) {
+    try {
+      const data = JSON.parse(last.content) as { title?: string };
+      return `📋 Tarea${data.title ? `: ${data.title}` : ""}`;
+    } catch {
+      return "📋 Nueva tarea";
+    }
+  }
+  if (last.contentType === ACTIVITY_CONTENT_TYPE && last.content) {
+    try {
+      const data = JSON.parse(last.content) as { title?: string };
+      return `📅 Actividad${data.title ? `: ${data.title}` : ""}`;
+    } catch {
+      return "📅 Nueva actividad";
+    }
+  }
+  if (last.contentType === SYSTEM_CONTENT_TYPE) {
+    return "ℹ️ Evento del sistema";
+  }
+  // E2EE: el server no ve el contenido, así que content es null en BD.
+  if (last.content === null) return "🔒 mensaje cifrado";
+  // Fallback (text/plain no cifrado)
+  return last.content;
 }
 
 /** Icono lucide apropiado para el MIME. */

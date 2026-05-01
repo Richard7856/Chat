@@ -40,6 +40,7 @@ export type RawConvRow = {
   last_msg_id: string | null;
   last_msg_sender: string | null;
   last_msg_content: string | null;
+  last_msg_content_type: string | null;
   last_msg_created_at: Date | null;
   unread_count: string;
 };
@@ -101,6 +102,7 @@ function rowToConversation(
           id: row.last_msg_id,
           senderUserId: row.last_msg_sender!,
           content: row.last_msg_content,
+          contentType: row.last_msg_content_type ?? "text/plain",
           createdAt: row.last_msg_created_at!.toISOString(),
         }
       : null,
@@ -120,7 +122,7 @@ export async function listConversationsForUser(userId: string): Promise<Conversa
      ),
      last_msg AS (
        SELECT DISTINCT ON (conversation_id)
-              conversation_id, id, sender_user_id, content, created_at
+              conversation_id, id, sender_user_id, content, content_type, created_at
          FROM messages
         WHERE conversation_id IN (SELECT conversation_id FROM my_convs)
         ORDER BY conversation_id, created_at DESC
@@ -131,6 +133,7 @@ export async function listConversationsForUser(userId: string): Promise<Conversa
             lm.id AS last_msg_id,
             lm.sender_user_id AS last_msg_sender,
             lm.content AS last_msg_content,
+            lm.content_type AS last_msg_content_type,
             lm.created_at AS last_msg_created_at,
             COALESCE((
               SELECT COUNT(*) FROM messages msg
@@ -163,7 +166,7 @@ export async function getConversationForUser(
         WHERE user_id = $1 AND conversation_id = $2
      ),
      lm AS (
-       SELECT id, sender_user_id, content, created_at
+       SELECT id, sender_user_id, content, content_type, created_at
          FROM messages
         WHERE conversation_id = $2
         ORDER BY created_at DESC
@@ -175,6 +178,7 @@ export async function getConversationForUser(
             lm.id AS last_msg_id,
             lm.sender_user_id AS last_msg_sender,
             lm.content AS last_msg_content,
+            lm.content_type AS last_msg_content_type,
             lm.created_at AS last_msg_created_at,
             COALESCE((
               SELECT COUNT(*) FROM messages msg

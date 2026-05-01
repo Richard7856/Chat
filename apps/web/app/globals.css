@@ -8,52 +8,64 @@
 @tailwind utilities;
 
 /* ============================================================================
- * Design tokens — paleta light institucional Euromex.
- * Mayo 2026: rediseño desde dark a light. HSL para facilitar interpolación.
+ * Design tokens — Euromex Chat (light institucional, refresh mayo 2026).
  *
- * Las 5 vars base las definió el usuario:
- *   --background, --foreground, --muted, --muted-foreground, --border
- * Las demás se derivaron para mantener jerarquía visual y contraste WCAG AA.
+ * Filosofía:
+ * - Off-white de fondo (no blanco puro): se siente menos "quirúrgico"
+ *   y permite que las cards (bg-card = blanco puro) destaquen sin abusar
+ *   del shadow.
+ * - Foreground más oscuro (222 47% 11% ≈ slate-900) para contraste >7:1.
+ * - Acentos por categoría además del primary brand: task=verde, activity=
+ *   morado, warning=ámbar. Permite renderizar etiquetas/cards diferenciables
+ *   sin necesidad de iconos.
  * ========================================================================= */
 @layer base {
   :root {
     /* Superficies */
-    --background: 0 0% 100%;             /* blanco puro */
-    --foreground: 222 15% 12%;           /* casi negro, ligeramente azulado */
+    --background: 220 13% 98%;           /* #fafafb — off-white amable */
+    --foreground: 222 47% 11%;           /* slate-900, alto contraste */
 
-    --card: 0 0% 100%;                   /* tarjetas = mismo nivel que bg, separadas por borde */
-    --card-foreground: 222 15% 12%;
+    --card: 0 0% 100%;                   /* cards = blanco puro, destacan */
+    --card-foreground: 222 47% 11%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 222 15% 12%;
+    --popover-foreground: 222 47% 11%;
 
-    /* Acentos — mantenemos el azul brand pero ligeramente más oscuro
-     * para garantizar contraste sobre blanco (>4.5:1 en texto). */
-    --primary: 222 85% 55%;              /* #2f5fe0 aprox. */
+    /* Brand */
+    --primary: 220 91% 54%;              /* azul brand refinado, blue-600 */
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 220 14% 96%;            /* gris muy claro = mismo que muted */
-    --secondary-foreground: 222 15% 12%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 47% 11%;
 
     --accent: 220 14% 96%;
-    --accent-foreground: 222 15% 12%;
+    --accent-foreground: 222 47% 11%;
 
     /* Estados */
-    --muted: 220 14% 96%;                /* gris muy claro para fondos secundarios */
-    --muted-foreground: 220 9% 46%;      /* gris medio para texto secundario */
+    --muted: 220 14% 96%;                /* fondos secundarios suaves */
+    --muted-foreground: 220 9% 40%;      /* texto secundario, más oscuro
+                                            que la versión anterior para
+                                            timestamps legibles */
 
-    --destructive: 0 72% 45%;            /* rojo más oscuro para legibilidad sobre blanco */
+    --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
 
-    --success: 142 65% 35%;              /* verde más oscuro, contraste sobre blanco */
+    --success: 142 71% 38%;
     --success-foreground: 0 0% 100%;
 
     /* Bordes y controles */
-    --border: 220 13% 91%;               /* borders sutiles */
-    --input: 0 0% 100%;                  /* inputs blancos, separados por --border */
-    --ring: 222 85% 55%;                 /* focus ring = primary */
+    --border: 220 13% 91%;
+    --input: 0 0% 100%;
+    --ring: 220 91% 54%;
 
-    --radius: 0.625rem;                  /* 10px */
+    /* Acentos por categoría (Fase 21 — refresh visual) */
+    --accent-task: 142 71% 38%;          /* verde para tareas */
+    --accent-task-soft: 142 71% 95%;     /* verde muy claro para fondos */
+    --accent-activity: 261 75% 55%;      /* morado para actividades */
+    --accent-activity-soft: 261 75% 96%;
+    --accent-warning: 38 92% 50%;        /* ámbar para warnings/PIN */
+
+    --radius: 0.625rem;
   }
 }
 
@@ -66,11 +78,18 @@
     @apply bg-background text-foreground antialiased;
     font-feature-settings: "cv11", "ss01", "ss03";
     text-rendering: optimizeLegibility;
+    /* Para chat queremos line-height ajustado, no el 1.5 default */
+    line-height: 1.45;
   }
-  /* Selección limpia con el accent */
+  /* Jerarquía tipográfica — usar como referencia, no clases globales */
+  h1, h2, h3 {
+    letter-spacing: -0.01em;
+  }
+
   ::selection {
-    @apply bg-primary/25 text-foreground;
+    @apply bg-primary/20 text-foreground;
   }
+
   /* Scrollbar sutil */
   *::-webkit-scrollbar {
     width: 10px;
@@ -96,26 +115,34 @@
  * Utilidades compuestas
  * ========================================================================= */
 @layer components {
-  /* Gradient sutil para fondos de "hero" de auth (light) */
+  /* Hero gradient para auth */
   .bg-hero {
     background:
       radial-gradient(
         ellipse 80% 60% at 50% -10%,
-        hsl(222 85% 55% / 0.10),
+        hsl(220 91% 54% / 0.10),
         transparent 60%
       ),
       radial-gradient(
         ellipse 60% 40% at 80% 110%,
-        hsl(222 85% 55% / 0.06),
+        hsl(220 91% 54% / 0.06),
         transparent 60%
       ),
       hsl(var(--background));
   }
 
-  /* Glow sutil detrás del logo o CTA principal */
+  /* Glow para CTAs principales */
   .glow-primary {
     box-shadow:
       0 0 0 1px hsl(var(--primary) / 0.25),
       0 0 40px -10px hsl(var(--primary) / 0.4);
+  }
+
+  /* Card elevada — usar en cards "flotantes" en chat (tareas/actividades) */
+  .card-elevated {
+    @apply bg-card border border-border rounded-xl;
+    box-shadow:
+      0 1px 2px 0 rgb(15 23 42 / 0.04),
+      0 1px 3px 0 rgb(15 23 42 / 0.06);
   }
 }
