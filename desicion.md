@@ -1153,3 +1153,161 @@ pendiente de aprobación de directivos de Euromex. **Cutover es ~3 comandos de
 - **Decisiones referenciadas:** todas las del 2026-04-17.
 - **Verificación pendiente:** `pnpm install` + `pnpm typecheck` + `pnpm dev`
   + `curl http://localhost:4000/health`.
+
+---
+
+## [2026-05-01] Roadmap propuesto: control granular, llamadas y APK
+
+**Contexto.** Después del refresh visual y las correcciones de bugs, el
+usuario pidió tres cosas adicionales que tienen scope variable:
+
+1. **Inmediato (esta sesión)**: gestión de dispositivos por admin —
+   poder ver y revocar dispositivos individuales por seguridad (ej.
+   teléfono robado, sospecha de filtración).
+2. **Próximo sprint**: llamadas de voz internas 1:1 (sin video).
+3. **Sprint posterior**: APK de Android como primera app móvil
+   nativa, y permisos granulares por usuario (quién puede tomar
+   captura, descargar documentos, etc.).
+
+Esta entrada documenta lo implementado hoy + el plan propuesto para los
+otros bloques, para que cualquier sesión futura pueda retomar sin
+perder contexto.
+
+### Implementado hoy: Gestión de dispositivos por admin
+
+- **Backend**: los endpoints ya existían (`GET /admin/users/:id/devices`
+  y `POST /admin/devices/:id/revoke`). No se tocaron.
+- **Frontend nuevo**: `apps/web/app/app/admin/user-devices-modal.tsx`
+  - Modal que lista todos los dispositivos de un usuario
+  - Cada device muestra: nombre, plataforma, browser/OS resumido,
+    último acceso, fecha de alta, status (activo/revocado/pendiente)
+  - Botón "Revocar" por device activo, con confirmación explícita
+  - Al revocar refresca la lista y la tabla externa (vía `onRevoked`)
+- **Frontend modificado**: `users-tab.tsx`
+  - La columna "Dispos." (que solo mostraba el número) ahora es
+    clickeable y abre el modal del usuario correspondiente
+  - Estado `devicesTarget` paralelo al `editTarget` existente
+
+**Diferencia con el flujo actual de "deshabilitar usuario"**:
+deshabilitar usuario revoca TODOS sus devices y le quita el acceso por
+completo. Revocar un device específico solo corta esa sesión (útil
+cuando el usuario sigue siendo válido pero perdió el celular o
+sospechamos un device específico).
+
+### Propuesto: Fase 22 — Llamadas de voz 1:1 (sin video)
+
+**Stack**:
+- WebRTC P2P (peer-to-peer) en el browser
+- Socket.IO existente para signaling (offer/answer/ICE candidates)
+- STUN servers gratuitos de Google (`stun:stun.l.google.com:19302`)
+- TURN server propio (coturn en el VPS) — solo si falla NAT traversal,
+  agregable después de medir
+- Encriptación: DTLS-SRTP es default en WebRTC, no necesitamos rotar
+  claves manualmente
+
+**Limitaciones aceptadas**:
+- Solo 1:1 (no llamadas grupales en esta fase — eso requiere SFU)
+- Solo audio (sin video)
+- Sin grabación (por privacidad explícita)
+
+**Implementación estimada**: 2-3 sesiones
+- Sesión 1: signaling + UI de incoming/outgoing call
+- Sesión 2: media negotiation + UX completa (mute, hangup, ringing)
+- Sesión 3: TURN server + tuning + audit log de calls
+
+**Archivos nuevos esperados**:
+- `apps/api/src/chat/voice-signaling.ts` — handlers de socket
+- `apps/web/app/lib/webrtc.ts` — wrapper de RTCPeerConnection
+- `apps/web/app/components/call-overlay.tsx` — UI fullscreen de call
+- DB: tabla `call_log` para audit (caller, callee, started_at, ended_at,
+  status: completed/missed/declined)
+
+### Propuesto: Fase 23 — APK Android (Capacitor, no TWA)
+
+**Decisión arquitectónica**: usar **Capacitor**, NO TWA.
+
+**Por qué Capacitor sobre TWA**:
+| Capacidad | TWA | Capacitor |
+|---|---|---|
+| Reusa código web existente | ✅ | ✅ |
+| Distribución Play Store | ✅ | ✅ |
+| Push notifications nativas | ✅ | ✅ |
+| **Bloqueo de screenshots (FLAG_SECURE)** | ❌ | ✅ |
+| Detección screen recording iOS | ❌ | ✅ (futuro) |
+| File system nativo (descargas) | parcial | ✅ |
+| Tamaño app | ~500KB | ~5MB |
+
+El bloqueo de screenshots es el feature crítico que decide a favor de
+Capacitor — el usuario quiere "control total" y TWA no puede llegar ahí.
+
+**Setup estimado**: 3-5 días
+- Día 1: Capacitor init + build pipeline
+- Día 2: Plugin nativo para FLAG_SECURE (Kotlin, ~50 LOC)
+- Día 3: Push notifications nativas (Firebase Cloud Messaging) +
+  reemplazar service worker actual
+- Día 4: File downloads nativos + permisos runtime
+- Día 5: Build + signing + .aab para Play Store internal track
+
+**Archivos nuevos**:
+- `apps/mobile/` (nuevo workspace)
+  - `capacitor.config.ts` — apunta a la URL de producción
+  - `android/` — proyecto Android Studio
+  - `src/plugins/security-plugin/` — FLAG_SECURE custom plugin
+- iOS queda fuera (sin Apple Developer account por ahora)
+
+### Propuesto: Fase 24 — Permisos granulares por usuario
+
+**Schema nuevo** (`apps/api/src/db/migrations/011-user-permissions.sql`):
+
+```sql
+ALTER TABLE users
+  ADD COLUMN can_download_attachments BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN can_export_chat          BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN can_share_externally     BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN can_create_groups        BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN can_invite_users         BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN can_initiate_calls       BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN max_attachment_mb        INT     NOT NULL DEFAULT 50;
+```
+
+**Enforcement por capa**:
+| Permiso | Server enforces | Native (Capacitor) enforces |
+|---|---|---|
+| can_download_attachments | bloquea `/attachments/:id/download` | bloquea botón descarga |
+| can_export_chat | bloquea endpoint export | n/a |
+| can_share_externally | n/a | activa FLAG_SECURE Android |
+| can_create_groups | bloquea `POST /conversations type=group` | oculta opción UI |
+| can_invite_users | bloquea `POST /admin/invitations` | oculta UI |
+| can_initiate_calls | bloquea signaling de outgoing | oculta botón |
+| max_attachment_mb | rechaza upload | valida antes de subir |
+
+**Watermark mejorado**: cuando `can_share_externally = false`, la
+watermark se vuelve más visible (opacity 0.10 en vez de 0.05) — añade
+fricción a quien intente leak con celular ajeno.
+
+**UI admin**: tab nueva "Permisos" o expansión del modal de edición
+del usuario con los toggles. Defaults conservadores: nadie puede
+exportar ni compartir externamente al inicio.
+
+**Implementación estimada**: 2 sesiones
+- Sesión 1: schema + endpoint enforcement + admin UI
+- Sesión 2: respeto en UI cliente + integración con plugin Capacitor
+
+### Orden recomendado de ejecución
+
+1. ✅ **Hoy**: Gestión de dispositivos por admin (DONE este commit)
+2. **Próxima sesión**: Fase 24 — permisos granulares (web only).
+   Esto da valor inmediato sin esperar al APK.
+3. **Después**: Fase 22 — llamadas de voz 1:1
+4. **Al final**: Fase 23 — APK Capacitor con FLAG_SECURE
+
+Este orden permite que el control de permisos arranque a darle valor
+al admin desde la web antes de invertir en el wrapper nativo.
+
+### Lo que NO se hará en este roadmap
+
+- Llamadas grupales o video (deferido a Fase 25+ si se justifica)
+- App iOS nativa (sin Apple Dev account; PWA en iOS sigue funcionando)
+- Detección de screenshot en iOS (limitación de la plataforma)
+- Federación con otros servidores (fuera de scope, esto es un chat
+  privado de empresa, no Matrix/XMPP)

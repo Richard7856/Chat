@@ -20,6 +20,7 @@ import {
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { formatRelative } from "./admin-utils";
+import { UserDevicesModal } from "./user-devices-modal";
 
 export function UsersTab({
   meId,
@@ -31,6 +32,9 @@ export function UsersTab({
   const [users, setUsers] = useState<AdminUserListItem[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // --- estado del modal de dispositivos (revocar por sospecha de robo, etc.) ---
+  const [devicesTarget, setDevicesTarget] = useState<AdminUserListItem | null>(null);
 
   // --- estado del modal de edición de perfil ---
   const [editTarget, setEditTarget] = useState<AdminUserListItem | null>(null);
@@ -170,6 +174,23 @@ export function UsersTab({
 
   return (
     <>
+      {/* ------------------------------------------------------------------ */}
+      {/* Modal de gestión de dispositivos (revocar por seguridad)            */}
+      {/* ------------------------------------------------------------------ */}
+      <UserDevicesModal
+        user={
+          devicesTarget
+            ? {
+                id: devicesTarget.id,
+                displayName: devicesTarget.displayName,
+                username: devicesTarget.username,
+              }
+            : null
+        }
+        onClose={() => setDevicesTarget(null)}
+        onRevoked={() => void refresh()}
+      />
+
       {/* ------------------------------------------------------------------ */}
       {/* Modal de edición de displayName + email                             */}
       {/* ------------------------------------------------------------------ */}
@@ -469,9 +490,21 @@ export function UsersTab({
                       </select>
                     </td>
 
-                    {/* --- Dispositivos activos --- */}
+                    {/* --- Dispositivos activos (clickable: abre modal de gestión) --- */}
                     <td className="px-4 py-3 text-center tabular-nums">
-                      {u.activeDevicesCount}
+                      <button
+                        type="button"
+                        onClick={() => setDevicesTarget(u)}
+                        title="Ver y revocar dispositivos"
+                        className={[
+                          "inline-flex min-w-[2rem] items-center justify-center rounded-md px-2 py-0.5 text-sm font-medium transition-colors",
+                          u.activeDevicesCount > 0
+                            ? "text-foreground hover:bg-muted hover:text-primary"
+                            : "text-muted-foreground hover:bg-muted",
+                        ].join(" ")}
+                      >
+                        {u.activeDevicesCount}
+                      </button>
                     </td>
 
                     {/* --- Último acceso --- */}
