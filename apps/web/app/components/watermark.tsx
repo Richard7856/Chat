@@ -29,9 +29,12 @@ export function Watermark({ username }: { username: string }) {
 
   const dataUri = useMemo(() => {
     const safeLabel = label.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    // Tema light: cambiamos el fill de blanco-translúcido a negro-translúcido
+    // para que la watermark siga siendo apenas visible en pantalla pero
+    // legible en screenshots JPEG (compresión hace destacar el patrón).
     const svg = `
       <svg xmlns='http://www.w3.org/2000/svg' width='380' height='150'>
-        <text x='0' y='75' fill='rgba(230,236,255,0.05)'
+        <text x='0' y='75' fill='rgba(15,23,42,0.05)'
               font-family='Inter, system-ui, sans-serif'
               font-size='13' font-weight='600' letter-spacing='0.02em'
               transform='rotate(-20 190 75)'>

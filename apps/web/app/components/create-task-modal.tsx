@@ -73,7 +73,7 @@ export function CreateTaskModal({ conversationId, members, currentUserId, onCrea
       >
         <div className="border-b border-border px-5 py-4">
           <div className="flex items-center gap-2">
-            <ClipboardList className="size-4 text-green-400" />
+            <ClipboardList className="size-4 text-green-700" />
             <h2 className="text-sm font-semibold">Nueva tarea</h2>
           </div>
         </div>

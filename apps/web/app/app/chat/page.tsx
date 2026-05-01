@@ -720,6 +720,20 @@ export default function ChatPage() {
           selectedId ? "hidden md:flex" : "flex",
         ].join(" ")}
       >
+        {/* Brand strip: logo oficial Euromex */}
+        <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/logo.png"
+            alt="Euromex"
+            className="h-7 w-auto select-none"
+            draggable={false}
+          />
+          <span className="text-sm font-semibold tracking-tight">
+            Euromex Chat
+          </span>
+        </div>
+
         {/* Header sidebar: usuario actual */}
         <div className="flex items-center gap-3 border-b border-border px-4 py-3">
           <Avatar
@@ -935,21 +949,22 @@ export default function ChatPage() {
 
             {/* Fase 19: Banner de notificaciones push (solo si no se ha dado permiso) */}
             {pushState === "unknown" && (
-              <div className="flex items-center justify-between gap-3 bg-indigo-950/60 border-b border-indigo-800/40 px-4 py-2 text-xs text-indigo-200">
+              <div className="flex items-center justify-between gap-3 border-b border-border bg-primary/5 px-4 py-2 text-xs text-foreground">
                 <div className="flex items-center gap-2">
-                  <Bell size={13} />
+                  <Bell size={13} className="text-primary" />
                   <span>Activa las notificaciones para recibir mensajes cuando no estés en la app.</span>
                 </div>
                 <div className="flex gap-2 shrink-0">
                   <button
-                    className="text-indigo-300 hover:text-white underline"
+                    className="font-medium text-primary underline-offset-2 hover:underline"
                     onClick={() => void subscribeToPush()}
                   >
                     Activar
                   </button>
                   <button
-                    className="text-indigo-400/60 hover:text-white"
+                    className="text-muted-foreground hover:text-foreground"
                     onClick={() => setPushState("denied")}
+                    aria-label="Descartar"
                   >
                     <BellOff size={13} />
                   </button>
@@ -1009,7 +1024,7 @@ export default function ChatPage() {
                       {mine && (
                         <button
                           type="button"
-                          className="self-center opacity-0 group-hover:opacity-100 transition text-yellow-400/60 hover:text-yellow-400"
+                          className="self-center opacity-0 group-hover:opacity-100 transition text-yellow-500/60 hover:text-yellow-600"
                           title={isStarred ? "Quitar de guardados" : "Guardar mensaje"}
                           onClick={() => void handleStar(msg.id, selectedConv.id)}
                         >
@@ -1041,7 +1056,7 @@ export default function ChatPage() {
                           {mine && (
                             <span
                               title={readByAll ? "Visto por todos" : readByAny ? "Visto" : "Enviado"}
-                              className={readByAny ? "text-blue-400" : "opacity-50"}
+                              className={readByAny ? "text-blue-600" : "opacity-50"}
                             >
                               {readByAny ? "✓✓" : "✓"}
                             </span>
@@ -1052,7 +1067,7 @@ export default function ChatPage() {
                       {!mine && (
                         <button
                           type="button"
-                          className="self-center opacity-0 group-hover:opacity-100 transition text-yellow-400/60 hover:text-yellow-400"
+                          className="self-center opacity-0 group-hover:opacity-100 transition text-yellow-500/60 hover:text-yellow-600"
                           title={isStarred ? "Quitar de guardados" : "Guardar mensaje"}
                           onClick={() => void handleStar(msg.id, selectedConv.id)}
                         >
@@ -1133,12 +1148,12 @@ export default function ChatPage() {
                     );
                     if (filtered.length === 0) return null;
                     return (
-                      <div className="absolute bottom-full mb-1 left-0 w-full bg-[#1e1e3a] border border-white/10 rounded-lg overflow-hidden shadow-xl z-50 max-h-40 overflow-y-auto">
+                      <div className="absolute bottom-full mb-1 left-0 w-full bg-popover text-popover-foreground border border-border rounded-lg overflow-hidden shadow-xl z-50 max-h-40 overflow-y-auto">
                         {filtered.map((m) => (
                           <button
                             key={m.userId}
                             type="button"
-                            className="w-full text-left px-3 py-2 text-sm text-white hover:bg-white/10 flex items-center gap-2"
+                            className="w-full text-left px-3 py-2 text-sm hover:bg-accent flex items-center gap-2"
                             onMouseDown={(e) => {
                               e.preventDefault();
                               // Reemplaza el último @query con @username
@@ -1146,8 +1161,8 @@ export default function ChatPage() {
                               setMentionQuery(null);
                             }}
                           >
-                            <span className="font-medium text-indigo-300">@{m.username}</span>
-                            <span className="text-white/50 text-xs">{m.displayName}</span>
+                            <span className="font-medium text-primary">@{m.username}</span>
+                            <span className="text-muted-foreground text-xs">{m.displayName}</span>
                           </button>
                         ))}
                       </div>
@@ -1276,7 +1291,7 @@ function MessageBody({ msg, mine, currentUserId }: { msg: RenderedMessage; mine:
   if (msg.status === "restricted_attachment" && msg.attachmentRestricted) {
     return (
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <Lock className="size-3.5 shrink-0 text-amber-400" />
+        <Lock className="size-3.5 shrink-0 text-amber-600" />
         <span>Documento restringido — Solo ciertos miembros tienen acceso</span>
       </div>
     );

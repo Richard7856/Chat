@@ -8,7 +8,6 @@ import {
   ArrowRight,
   ChevronRight,
   Loader2,
-  Lock,
   LogIn,
   ShieldCheck,
   UserX,
@@ -154,11 +153,15 @@ export default function LoginPage() {
   return (
     <main className="relative min-h-screen bg-hero">
       <div className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6 py-12">
-        {/* Brand */}
+        {/* Brand — logo oficial Euromex */}
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-4 flex size-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground glow-primary">
-            <Lock className="size-6" />
-          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/logo.png"
+            alt="Euromex"
+            className="mb-4 h-16 w-auto select-none"
+            draggable={false}
+          />
           <h1 className="text-3xl font-bold tracking-tight">Euromex Chat</h1>
           <p className="mt-2 flex items-center gap-1.5 text-sm text-muted-foreground">
             <ShieldCheck className="size-4 text-primary" />
@@ -167,7 +170,7 @@ export default function LoginPage() {
         </div>
 
         {/* Form card */}
-        <div className="rounded-2xl border border-border bg-card p-6 shadow-xl shadow-black/20 animate-slide-up">
+        <div className="rounded-2xl border border-border bg-card p-6 shadow-xl shadow-black/5 animate-slide-up">
 
           {/* ---------------------------------------------------------------- */}
           {/* Modo rápido: solo TOTP                                           */}

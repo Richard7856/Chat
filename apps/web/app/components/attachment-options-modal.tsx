@@ -84,7 +84,7 @@ export function AttachmentOptionsModal({ file, members, currentUserId, onConfirm
                   className="accent-[hsl(var(--primary))]"
                 />
                 <span className="flex items-center gap-1.5">
-                  <Lock className="size-3.5 text-amber-400" />
+                  <Lock className="size-3.5 text-amber-600" />
                   Solo personas seleccionadas
                 </span>
               </label>
@@ -126,7 +126,7 @@ export function AttachmentOptionsModal({ file, members, currentUserId, onConfirm
                 onChange={(e) => setUsePin(e.target.checked)}
                 className="accent-[hsl(var(--primary))]"
               />
-              <Key className="size-3.5 text-blue-400" />
+              <Key className="size-3.5 text-blue-600" />
               <span>Requerir PIN para descargar</span>
             </label>
             {usePin && (

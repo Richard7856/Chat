@@ -8,47 +8,52 @@
 @tailwind utilities;
 
 /* ============================================================================
- * Design tokens — inspirado en Linear + Vercel dashboard.
- * Dark-first. HSL para facilitar interpolación y variantes.
+ * Design tokens — paleta light institucional Euromex.
+ * Mayo 2026: rediseño desde dark a light. HSL para facilitar interpolación.
+ *
+ * Las 5 vars base las definió el usuario:
+ *   --background, --foreground, --muted, --muted-foreground, --border
+ * Las demás se derivaron para mantener jerarquía visual y contraste WCAG AA.
  * ========================================================================= */
 @layer base {
   :root {
     /* Superficies */
-    --background: 222 47% 6%;          /* #0a0e1a — fondo principal */
-    --foreground: 217 33% 96%;         /* #eef2f9 — texto primario */
+    --background: 0 0% 100%;             /* blanco puro */
+    --foreground: 222 15% 12%;           /* casi negro, ligeramente azulado */
 
-    --card: 222 40% 9%;                /* #101624 — superficies elevadas */
-    --card-foreground: 217 33% 96%;
+    --card: 0 0% 100%;                   /* tarjetas = mismo nivel que bg, separadas por borde */
+    --card-foreground: 222 15% 12%;
 
-    --popover: 222 40% 10%;
-    --popover-foreground: 217 33% 96%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 15% 12%;
 
-    /* Acentos */
-    --primary: 222 85% 60%;            /* azul brand, evolución del #4f7cff */
-    --primary-foreground: 222 47% 6%;
+    /* Acentos — mantenemos el azul brand pero ligeramente más oscuro
+     * para garantizar contraste sobre blanco (>4.5:1 en texto). */
+    --primary: 222 85% 55%;              /* #2f5fe0 aprox. */
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 222 30% 14%;
-    --secondary-foreground: 217 33% 96%;
+    --secondary: 220 14% 96%;            /* gris muy claro = mismo que muted */
+    --secondary-foreground: 222 15% 12%;
 
-    --accent: 222 30% 14%;
-    --accent-foreground: 217 33% 96%;
+    --accent: 220 14% 96%;
+    --accent-foreground: 222 15% 12%;
 
     /* Estados */
-    --muted: 222 25% 14%;
-    --muted-foreground: 217 18% 62%;
+    --muted: 220 14% 96%;                /* gris muy claro para fondos secundarios */
+    --muted-foreground: 220 9% 46%;      /* gris medio para texto secundario */
 
-    --destructive: 0 72% 55%;
-    --destructive-foreground: 0 0% 98%;
+    --destructive: 0 72% 45%;            /* rojo más oscuro para legibilidad sobre blanco */
+    --destructive-foreground: 0 0% 100%;
 
-    --success: 142 71% 45%;
-    --success-foreground: 0 0% 98%;
+    --success: 142 65% 35%;              /* verde más oscuro, contraste sobre blanco */
+    --success-foreground: 0 0% 100%;
 
     /* Bordes y controles */
-    --border: 222 30% 16%;
-    --input: 222 30% 14%;
-    --ring: 222 85% 60%;
+    --border: 220 13% 91%;               /* borders sutiles */
+    --input: 0 0% 100%;                  /* inputs blancos, separados por --border */
+    --ring: 222 85% 55%;                 /* focus ring = primary */
 
-    --radius: 0.625rem;                /* 10px — más suave que el 6px default */
+    --radius: 0.625rem;                  /* 10px */
   }
 }
 
@@ -64,7 +69,7 @@
   }
   /* Selección limpia con el accent */
   ::selection {
-    @apply bg-primary/30 text-foreground;
+    @apply bg-primary/25 text-foreground;
   }
   /* Scrollbar sutil */
   *::-webkit-scrollbar {
@@ -81,7 +86,7 @@
     background-clip: padding-box;
   }
   *::-webkit-scrollbar-thumb:hover {
-    background: hsl(var(--muted));
+    background: hsl(var(--muted-foreground) / 0.4);
     background-clip: padding-box;
     border: 2px solid transparent;
   }
@@ -91,17 +96,17 @@
  * Utilidades compuestas
  * ========================================================================= */
 @layer components {
-  /* Gradient sutil para fondos de "hero" de auth */
+  /* Gradient sutil para fondos de "hero" de auth (light) */
   .bg-hero {
     background:
       radial-gradient(
         ellipse 80% 60% at 50% -10%,
-        hsl(222 85% 60% / 0.15),
+        hsl(222 85% 55% / 0.10),
         transparent 60%
       ),
       radial-gradient(
         ellipse 60% 40% at 80% 110%,
-        hsl(222 85% 60% / 0.08),
+        hsl(222 85% 55% / 0.06),
         transparent 60%
       ),
       hsl(var(--background));
@@ -110,7 +115,7 @@
   /* Glow sutil detrás del logo o CTA principal */
   .glow-primary {
     box-shadow:
-      0 0 0 1px hsl(var(--primary) / 0.3),
-      0 0 40px -10px hsl(var(--primary) / 0.5);
+      0 0 0 1px hsl(var(--primary) / 0.25),
+      0 0 40px -10px hsl(var(--primary) / 0.4);
   }
 }

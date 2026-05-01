@@ -119,9 +119,9 @@ export function ActivityCard({ payload, currentUserId }: Props) {
               className={[
                 "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
                 p.rsvpStatus === "confirmed"
-                  ? "bg-green-500/15 text-green-400"
+                  ? "bg-green-500/15 text-green-700"
                   : p.rsvpStatus === "declined"
-                    ? "bg-red-500/15 text-red-400"
+                    ? "bg-red-500/15 text-red-700"
                     : "bg-secondary text-muted-foreground",
               ].join(" ")}
             >
@@ -178,7 +178,7 @@ export function ActivityCard({ payload, currentUserId }: Props) {
       )}
 
       {isParticipant && myRsvp === "confirmed" && (
-        <div className="flex items-center gap-1 text-[11px] text-green-400">
+        <div className="flex items-center gap-1 text-[11px] text-green-700">
           <CheckCircle2 className="size-3" /> Confirmado
         </div>
       )}

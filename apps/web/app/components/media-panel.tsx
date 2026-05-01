@@ -213,31 +213,31 @@ export function MediaPanel({
   return (
     <>
       {/* Panel */}
-      <aside className="w-72 border-l border-white/10 flex flex-col bg-[#1a1a2e] text-sm">
+      <aside className="w-72 border-l border-border flex flex-col bg-card text-sm text-card-foreground">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-          <span className="font-semibold text-white">Medios</span>
-          <button onClick={onClose} className="text-white/50 hover:text-white transition">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+          <span className="font-semibold">Medios</span>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition" aria-label="Cerrar">
             <X size={16} />
           </button>
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-white/10">
+        <div className="flex border-b border-border">
           {tabs.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
               className={`flex-1 flex flex-col items-center gap-0.5 py-2 text-[11px] transition ${
                 tab === t.id
-                  ? "text-indigo-400 border-b-2 border-indigo-400"
-                  : "text-white/40 hover:text-white/70"
+                  ? "text-primary border-b-2 border-primary"
+                  : "text-muted-foreground hover:text-foreground"
               }`}
             >
               {t.icon}
               <span>{t.label}</span>
               {t.count != null && t.count > 0 && (
-                <span className="text-[10px] text-white/40">{t.count}</span>
+                <span className="text-[10px] text-muted-foreground">{t.count}</span>
               )}
             </button>
           ))}
@@ -246,14 +246,14 @@ export function MediaPanel({
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-2">
           {loadingAttachments && (tab === "archivos" || tab === "docs") && (
-            <p className="text-white/40 text-center py-6 text-xs">Cargando…</p>
+            <p className="text-muted-foreground text-center py-6 text-xs">Cargando…</p>
           )}
 
           {/* ── Archivos (images) ── */}
           {tab === "archivos" && !loadingAttachments && (
             <>
               {imageAttachments.length === 0 ? (
-                <p className="text-white/30 text-center py-8 text-xs">Sin imágenes</p>
+                <p className="text-muted-foreground text-center py-8 text-xs">Sin imágenes</p>
               ) : (
                 <div className="grid grid-cols-3 gap-1">
                   {imageAttachments.map((att) => {
@@ -266,7 +266,7 @@ export function MediaPanel({
                     return (
                       <div
                         key={att.id}
-                        className="aspect-square relative rounded overflow-hidden bg-white/5 cursor-pointer"
+                        className="aspect-square relative rounded overflow-hidden bg-muted cursor-pointer"
                         onClick={() => {
                           if (blobUrl) setLightbox(blobUrl);
                           else if (payload && !restricted) void handleDownload(att, payload);
@@ -276,15 +276,15 @@ export function MediaPanel({
                           <img src={blobUrl} alt="" className="w-full h-full object-cover" />
                         ) : restricted ? (
                           <div className="w-full h-full flex items-center justify-center">
-                            <Lock size={18} className="text-white/30" />
+                            <Lock size={18} className="text-muted-foreground" />
                           </div>
                         ) : (
                           <div className="w-full h-full flex items-center justify-center">
-                            <Image size={18} className="text-white/30" />
+                            <Image size={18} className="text-muted-foreground" />
                           </div>
                         )}
                         {att.hasPin && (
-                          <span className="absolute top-1 right-1 text-[10px] bg-black/60 rounded px-1">
+                          <span className="absolute top-1 right-1 text-[10px] bg-foreground/70 text-background rounded px-1">
                             🔑
                           </span>
                         )}
@@ -300,22 +300,22 @@ export function MediaPanel({
           {tab === "links" && (
             <>
               {uniqueLinks.length === 0 ? (
-                <p className="text-white/30 text-center py-8 text-xs">Sin links compartidos</p>
+                <p className="text-muted-foreground text-center py-8 text-xs">Sin links compartidos</p>
               ) : (
                 <ul className="space-y-2">
                   {uniqueLinks.map((l) => (
-                    <li key={l.url} className="flex items-start gap-2 bg-white/5 rounded p-2">
-                      <ExternalLink size={13} className="text-indigo-400 mt-0.5 shrink-0" />
+                    <li key={l.url} className="flex items-start gap-2 bg-muted rounded p-2">
+                      <ExternalLink size={13} className="text-primary mt-0.5 shrink-0" />
                       <div className="min-w-0">
                         <a
                           href={l.url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-indigo-300 hover:underline break-all line-clamp-2 text-xs"
+                          className="text-primary hover:underline break-all line-clamp-2 text-xs"
                         >
                           {l.url}
                         </a>
-                        <p className="text-white/30 text-[10px] mt-0.5">
+                        <p className="text-muted-foreground text-[10px] mt-0.5">
                           {new Date(l.sentAt).toLocaleDateString("es-MX", { day: "2-digit", month: "short" })}
                         </p>
                       </div>
@@ -330,7 +330,7 @@ export function MediaPanel({
           {tab === "docs" && !loadingAttachments && (
             <>
               {docAttachments.length === 0 ? (
-                <p className="text-white/30 text-center py-8 text-xs">Sin documentos</p>
+                <p className="text-muted-foreground text-center py-8 text-xs">Sin documentos</p>
               ) : (
                 <ul className="space-y-2">
                   {docAttachments.map((att) => {
@@ -340,13 +340,13 @@ export function MediaPanel({
                       !att.allowedUserIds.includes(currentUserId);
 
                     return (
-                      <li key={att.id} className="flex items-center gap-2 bg-white/5 rounded p-2">
-                        <FileText size={16} className="text-indigo-400 shrink-0" />
+                      <li key={att.id} className="flex items-center gap-2 bg-muted rounded p-2">
+                        <FileText size={16} className="text-primary shrink-0" />
                         <div className="min-w-0 flex-1">
-                          <p className="text-white text-xs truncate">
+                          <p className="text-foreground text-xs truncate">
                             {payload?.fileName ?? "Archivo cifrado"}
                           </p>
-                          <p className="text-white/40 text-[10px]">
+                          <p className="text-muted-foreground text-[10px]">
                             {formatBytes(att.byteSize)} ·{" "}
                             {new Date(att.createdAt).toLocaleDateString("es-MX", {
                               day: "2-digit",
@@ -357,11 +357,11 @@ export function MediaPanel({
                           </p>
                         </div>
                         {restricted ? (
-                          <span className="text-white/30 text-[10px]">Sin acceso</span>
+                          <span className="text-muted-foreground text-[10px]">Sin acceso</span>
                         ) : payload ? (
                           <button
                             onClick={() => void handleDownload(att, payload)}
-                            className="text-white/50 hover:text-white transition"
+                            className="text-muted-foreground hover:text-foreground transition"
                             title="Descargar"
                           >
                             <Download size={14} />
@@ -379,7 +379,7 @@ export function MediaPanel({
           {tab === "guardados" && (
             <>
               {starredInConv.length === 0 ? (
-                <p className="text-white/30 text-center py-8 text-xs">
+                <p className="text-muted-foreground text-center py-8 text-xs">
                   Sin mensajes guardados.
                   <br />
                   Mantén presionado un mensaje y toca ⭐
@@ -389,11 +389,11 @@ export function MediaPanel({
                   {starredInConv.map((s) => {
                     const msg = messages.find((m) => m.id === s.messageId);
                     return (
-                      <li key={s.messageId} className="bg-white/5 rounded p-2">
-                        <p className="text-yellow-300/80 text-xs line-clamp-3">
+                      <li key={s.messageId} className="bg-muted rounded p-2">
+                        <p className="text-foreground text-xs line-clamp-3">
                           {msg?.plaintext ?? msg?.attachment?.fileName ?? "(mensaje cifrado)"}
                         </p>
-                        <p className="text-white/30 text-[10px] mt-1">
+                        <p className="text-muted-foreground text-[10px] mt-1">
                           {new Date(s.starredAt).toLocaleDateString("es-MX", {
                             day: "2-digit",
                             month: "short",
@@ -409,7 +409,7 @@ export function MediaPanel({
         </div>
       </aside>
 
-      {/* Lightbox */}
+      {/* Lightbox — el scrim negro funciona en cualquier tema */}
       {lightbox && (
         <div
           className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center"
@@ -424,6 +424,7 @@ export function MediaPanel({
           <button
             className="absolute top-4 right-4 text-white/70 hover:text-white"
             onClick={() => setLightbox(null)}
+            aria-label="Cerrar"
           >
             <X size={24} />
           </button>
@@ -432,10 +433,10 @@ export function MediaPanel({
 
       {/* PIN Modal */}
       {pinModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-          <div className="bg-[#1e1e3a] rounded-xl p-5 w-80 space-y-4">
-            <h3 className="text-white font-semibold">PIN de descarga</h3>
-            <p className="text-white/60 text-sm">
+        <div className="fixed inset-0 z-50 bg-foreground/40 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-card text-card-foreground border border-border rounded-xl p-5 w-80 space-y-4 shadow-xl">
+            <h3 className="font-semibold">PIN de descarga</h3>
+            <p className="text-muted-foreground text-sm">
               Este archivo requiere un PIN para descargarlo.
             </p>
             <input
@@ -444,9 +445,9 @@ export function MediaPanel({
               value={pin}
               onChange={(e) => setPin(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && void handlePinDownload()}
-              className="w-full rounded-lg bg-white/10 px-3 py-2 text-white text-sm outline-none focus:ring-1 focus:ring-indigo-500"
+              className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
             />
-            {pinError && <p className="text-red-400 text-xs">{pinError}</p>}
+            {pinError && <p className="text-destructive text-xs">{pinError}</p>}
             <div className="flex gap-2 justify-end">
               <button
                 onClick={() => {
@@ -454,13 +455,13 @@ export function MediaPanel({
                   setPin("");
                   setPinError("");
                 }}
-                className="px-3 py-1.5 text-white/60 hover:text-white text-sm"
+                className="px-3 py-1.5 text-muted-foreground hover:text-foreground text-sm"
               >
                 Cancelar
               </button>
               <button
                 onClick={() => void handlePinDownload()}
-                className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm"
+                className="px-4 py-1.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium"
               >
                 Descargar
               </button>

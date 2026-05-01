@@ -88,7 +88,7 @@ export function TaskCard({ payload, currentUserId }: Props) {
     <div className="w-full rounded-xl border border-green-500/20 bg-green-500/5 p-3">
       {/* Encabezado */}
       <div className="mb-2 flex items-start gap-2">
-        <CheckSquare className="mt-0.5 size-4 shrink-0 text-green-400" />
+        <CheckSquare className="mt-0.5 size-4 shrink-0 text-green-700" />
         <div className="min-w-0 flex-1">
           <div
             className={[
@@ -121,9 +121,9 @@ export function TaskCard({ payload, currentUserId }: Props) {
               className={[
                 "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
                 a.status === "completed"
-                  ? "bg-green-500/15 text-green-400"
+                  ? "bg-green-500/15 text-green-700"
                   : a.status === "in_progress"
-                    ? "bg-blue-500/15 text-blue-400"
+                    ? "bg-blue-500/15 text-blue-700"
                     : "bg-secondary text-muted-foreground",
               ].join(" ")}
             >
@@ -169,7 +169,7 @@ export function TaskCard({ payload, currentUserId }: Props) {
       )}
 
       {isAssignee && myStatus === "completed" && (
-        <div className="flex items-center gap-1 text-[11px] text-green-400">
+        <div className="flex items-center gap-1 text-[11px] text-green-700">
           <Check className="size-3" /> Tu parte está completada
         </div>
       )}

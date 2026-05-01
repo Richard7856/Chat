@@ -144,12 +144,12 @@ export function AttachmentsPanel({ conversationId, messageCache, currentUserId, 
                         <span className="truncate text-xs font-medium">{name}</span>
                         {item.accessType === "restricted" && (
                           <span title="Acceso restringido">
-                            <Lock className="size-3 shrink-0 text-amber-400" />
+                            <Lock className="size-3 shrink-0 text-amber-600" />
                           </span>
                         )}
                         {item.hasPin && (
                           <span title="Requiere PIN">
-                            <Key className="size-3 shrink-0 text-blue-400" />
+                            <Key className="size-3 shrink-0 text-blue-600" />
                           </span>
                         )}
                       </div>

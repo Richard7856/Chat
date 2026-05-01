@@ -14,7 +14,7 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     title: "Euromex",
-    statusBarStyle: "black-translucent",
+    statusBarStyle: "default", // tema light: barra de estado oscura sobre fondo claro
   },
   formatDetection: {
     telephone: false,
@@ -24,7 +24,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0a0e1a",
+  themeColor: "#ffffff", // tema light institucional Euromex
   width: "device-width",
   initialScale: 1,
   maximumScale: 5,
@@ -33,7 +33,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="es" className="dark">
+    <html lang="es">
       <body className="font-sans min-h-screen bg-background text-foreground">
         {children}
         <InstallPrompt />

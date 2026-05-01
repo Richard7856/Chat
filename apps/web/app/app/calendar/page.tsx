@@ -284,7 +284,7 @@ export default function CalendarPage() {
                             "flex w-full items-start gap-1 rounded px-1.5 py-1 text-[11px] text-left transition-colors hover:opacity-80",
                             item.kind === "activity"
                               ? "bg-primary/15 text-primary"
-                              : "bg-green-500/15 text-green-400",
+                              : "bg-green-500/15 text-green-700",
                           ].join(" ")}
                         >
                           {item.kind === "activity" ? (
@@ -351,7 +351,7 @@ export default function CalendarPage() {
                         "flex w-full items-center gap-1 truncate rounded px-1 py-0.5 text-[10px] text-left transition-colors hover:opacity-80",
                         item.kind === "activity"
                           ? "bg-primary/15 text-primary"
-                          : "bg-green-500/15 text-green-400",
+                          : "bg-green-500/15 text-green-700",
                       ].join(" ")}
                     >
                       {item.kind === "activity" ? (
@@ -377,7 +377,7 @@ export default function CalendarPage() {
             <CalendarDays className="size-3 text-primary" /> Actividad
           </span>
           <span className="flex items-center gap-1">
-            <CheckSquare className="size-3 text-green-400" /> Tarea
+            <CheckSquare className="size-3 text-green-700" /> Tarea
           </span>
         </div>
         </>}
