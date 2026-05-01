@@ -9,6 +9,7 @@ import {
   type UploadAttachmentResponse,
 } from "@euromex/shared";
 import { requireAuth } from "../auth/jwt.js";
+import { getUserPermissions } from "../auth/permissions.js";
 import {
   getAlertWatchersInConversation,
   insertSystemMessage,
@@ -76,13 +77,19 @@ export async function attachmentRoutes(app: FastifyInstance) {
         return reply.code(403).send({ error: "not_a_member" });
       }
 
+      // Fase 24: aplicar límite de tamaño por-usuario (en MB), tomando el más
+      // estricto entre el global de la app y el del usuario.
+      const perms = await getUserPermissions(userId);
+      const userLimitBytes = perms.maxAttachmentMb * 1024 * 1024;
+      const effectiveLimit = Math.min(config.maxAttachmentBytes, userLimitBytes);
+
       // Acepta un campo file + campos de texto opcionales para PIN y acceso.
       let downloadPin: string | undefined;
       let allowedUserIds: string[] | undefined;
 
       const parts = req.parts({
         limits: {
-          fileSize: config.maxAttachmentBytes,
+          fileSize: effectiveLimit,
           files: 1,
           fields: 2, // downloadPin + allowedUserIds
         },
@@ -125,7 +132,12 @@ export async function attachmentRoutes(app: FastifyInstance) {
 
       if (truncated) {
         await deleteBlob(storageKey).catch(() => {});
-        return reply.code(413).send({ error: "file_too_large" });
+        // Devolvemos el límite efectivo (MB) para que el cliente pueda
+        // mostrar un mensaje claro: "máximo 10 MB para tu usuario".
+        return reply.code(413).send({
+          error: "file_too_large",
+          maxMb: Math.floor(effectiveLimit / (1024 * 1024)),
+        });
       }
 
       // Hashear el PIN si fue provisto.
@@ -243,6 +255,15 @@ export async function attachmentRoutes(app: FastifyInstance) {
     { preHandler: [requireAuth] },
     async (req, reply) => {
       const userId = req.session!.sub;
+
+      // Fase 24: el admin puede revocar la capacidad de descarga por usuario.
+      // Si el flag está apagado, devolvemos 403 ANTES de revelar si el
+      // attachment existe (no leak por error de "not_found" vs "denied").
+      const perms = await getUserPermissions(userId);
+      if (!perms.canDownloadAttachments) {
+        return reply.code(403).send({ error: "downloads_disabled" });
+      }
+
       const att = await getAttachmentForUser(req.params.id, userId);
       if (!att) return reply.code(404).send({ error: "not_found" });
 

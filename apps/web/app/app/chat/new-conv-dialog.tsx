@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, MessageSquare, Search, Users } from "lucide-react";
 import type { Conversation, UserListItem } from "@euromex/shared";
-import { api } from "../../lib/api";
+import { api, DEFAULT_PERMISSIONS, loadSession } from "../../lib/api";
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Avatar } from "../../components/ui/avatar";
 import { Button } from "../../components/ui/button";
@@ -38,6 +38,11 @@ export function NewConversationDialog({
   const [name, setName] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Fase 24: si el admin revocó la capacidad de crear grupos, escondemos
+  // la opción del switch y forzamos type=dm. (El server igual valida.)
+  const canCreateGroups =
+    (loadSession()?.user.permissions ?? DEFAULT_PERMISSIONS).canCreateGroups;
 
   // Reset al abrir/cerrar
   useEffect(() => {
@@ -115,7 +120,8 @@ export function NewConversationDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {/* Tabs tipo pill */}
+        {/* Tabs tipo pill — la opción "Grupo" se oculta si el admin
+            revocó can_create_groups para este usuario. */}
         <div className="flex rounded-lg border border-border bg-background p-1">
           <TabBtn
             active={type === "dm"}
@@ -126,12 +132,14 @@ export function NewConversationDialog({
             icon={<MessageSquare className="size-4" />}
             label="Directo"
           />
-          <TabBtn
-            active={type === "group"}
-            onClick={() => setType("group")}
-            icon={<Users className="size-4" />}
-            label="Grupo"
-          />
+          {canCreateGroups && (
+            <TabBtn
+              active={type === "group"}
+              onClick={() => setType("group")}
+              icon={<Users className="size-4" />}
+              label="Grupo"
+            />
+          )}
         </div>
 
         {type === "group" && (

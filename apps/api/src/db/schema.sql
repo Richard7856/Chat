@@ -19,6 +19,15 @@ CREATE TABLE IF NOT EXISTS users (
   -- miembros añadidos, etc.) en las conversaciones donde participe. El
   -- bootstrap admin lo trae activo por default; los usuarios regulares no.
   receives_security_alerts BOOLEAN NOT NULL DEFAULT false,
+  -- Fase 24: permisos granulares — el admin puede limitar capacidades
+  -- por persona (ver migration 011-user-permissions.sql).
+  can_download_attachments BOOLEAN NOT NULL DEFAULT true,
+  can_share_externally     BOOLEAN NOT NULL DEFAULT false,
+  can_create_groups        BOOLEAN NOT NULL DEFAULT true,
+  can_invite_users         BOOLEAN NOT NULL DEFAULT false,
+  can_initiate_calls       BOOLEAN NOT NULL DEFAULT true,
+  max_attachment_mb        INT     NOT NULL DEFAULT 50
+    CHECK (max_attachment_mb BETWEEN 1 AND 500),
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );

@@ -14,6 +14,7 @@ import {
   type UserListItem,
 } from "@euromex/shared";
 import { requireAuth } from "../auth/jwt.js";
+import { getUserPermissions } from "../auth/permissions.js";
 import {
   createConversation,
   findDmBetween,
@@ -105,6 +106,15 @@ export async function conversationRoutes(app: FastifyInstance) {
       }
       const { type, name, description, memberUserIds } = parsed.data;
       const userId = req.session!.sub;
+
+      // Fase 24: el admin puede revocar la capacidad de crear grupos por
+      // usuario. Los DMs siempre se permiten (es el chat 1:1 base).
+      if (type === "group") {
+        const perms = await getUserPermissions(userId);
+        if (!perms.canCreateGroups) {
+          return reply.code(403).send({ error: "groups_disabled" });
+        }
+      }
 
       if (type === "dm") {
         const other = memberUserIds[0]!;

@@ -1,7 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Pencil, ShieldAlert, ShieldCheck } from "lucide-react";
+import {
+  Loader2,
+  Lock,
+  Pencil,
+  ShieldAlert,
+  ShieldCheck,
+} from "lucide-react";
 import type {
   AdminUserListItem,
   AdminUserUpdateRequest,
@@ -21,6 +27,7 @@ import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { formatRelative } from "./admin-utils";
 import { UserDevicesModal } from "./user-devices-modal";
+import { UserPermissionsModal } from "./user-permissions-modal";
 
 export function UsersTab({
   meId,
@@ -35,6 +42,8 @@ export function UsersTab({
 
   // --- estado del modal de dispositivos (revocar por sospecha de robo, etc.) ---
   const [devicesTarget, setDevicesTarget] = useState<AdminUserListItem | null>(null);
+  // --- estado del modal de permisos granulares (Fase 24) ---
+  const [permsTarget, setPermsTarget] = useState<AdminUserListItem | null>(null);
 
   // --- estado del modal de edición de perfil ---
   const [editTarget, setEditTarget] = useState<AdminUserListItem | null>(null);
@@ -189,6 +198,15 @@ export function UsersTab({
         }
         onClose={() => setDevicesTarget(null)}
         onRevoked={() => void refresh()}
+      />
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Modal de permisos granulares (Fase 24)                              */}
+      {/* ------------------------------------------------------------------ */}
+      <UserPermissionsModal
+        user={permsTarget}
+        onClose={() => setPermsTarget(null)}
+        onSaved={() => void refresh()}
       />
 
       {/* ------------------------------------------------------------------ */}
@@ -521,17 +539,28 @@ export function UsersTab({
                       })}
                     </td>
 
-                    {/* --- Botón editar perfil --- */}
+                    {/* --- Botones de acción (perfil + permisos) --- */}
                     <td className="px-2 py-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => openEdit(u)}
-                        disabled={saving}
-                        title="Editar nombre y email"
-                        className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-                      >
-                        <Pencil className="size-3.5" />
-                      </button>
+                      <div className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setPermsTarget(u)}
+                          disabled={saving}
+                          title="Permisos granulares (descarga, screenshots, etc.)"
+                          className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-primary disabled:opacity-50"
+                        >
+                          <Lock className="size-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openEdit(u)}
+                          disabled={saving}
+                          title="Editar nombre y email"
+                          className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                        >
+                          <Pencil className="size-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

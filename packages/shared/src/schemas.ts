@@ -84,6 +84,27 @@ export const EnrollCompleteRequestSchema = z.object({
 });
 export type EnrollCompleteRequest = z.infer<typeof EnrollCompleteRequestSchema>;
 
+/**
+ * Fase 24 — Permisos granulares por usuario.
+ *
+ * Estos flags los controla el admin desde el panel y se devuelven en la
+ * respuesta de auth para que el cliente pueda ocultar UI prohibida (los
+ * admins igual aplican enforcement server-side, esta es la capa de UX).
+ *
+ * Defaults sensatos para usuarios nuevos están en la migration 011 y en
+ * apps/api/src/db/schema.sql (capacidades existentes preservadas + restricción
+ * conservadora en lo que es extracción de info).
+ */
+export const UserPermissionsSchema = z.object({
+  canDownloadAttachments: z.boolean(),
+  canShareExternally: z.boolean(),
+  canCreateGroups: z.boolean(),
+  canInviteUsers: z.boolean(),
+  canInitiateCalls: z.boolean(),
+  maxAttachmentMb: z.number().int().min(1).max(500),
+});
+export type UserPermissions = z.infer<typeof UserPermissionsSchema>;
+
 export const AuthSuccessResponseSchema = z.object({
   accessToken: z.string(),
   expiresInSec: z.number().int().positive(),
@@ -92,6 +113,8 @@ export const AuthSuccessResponseSchema = z.object({
     username: UsernameSchema,
     displayName: z.string(),
     role: UserRoleSchema,
+    /** Fase 24 — permisos efectivos del usuario en este momento. */
+    permissions: UserPermissionsSchema,
   }),
   device: z.object({
     id: z.string().uuid(),
@@ -138,6 +161,8 @@ export const MeResponseSchema = z.object({
     role: UserRoleSchema,
     /** Si true, este usuario recibe avisos de seguridad (super admin). */
     receivesSecurityAlerts: z.boolean(),
+    /** Fase 24 — permisos granulares efectivos. */
+    permissions: UserPermissionsSchema,
   }),
   device: z.object({
     id: z.string().uuid(),
@@ -427,6 +452,8 @@ export const AdminUserListItemSchema = z.object({
   managerUserId: z.string().uuid().nullable(),
   /** Nombre del jefe directo — denormalizado para no necesitar lookup adicional. */
   managerDisplayName: z.string().nullable(),
+  /** Fase 24 — permisos granulares (todos los flags se incluyen completos). */
+  permissions: UserPermissionsSchema,
 });
 export type AdminUserListItem = z.infer<typeof AdminUserListItemSchema>;
 
@@ -442,6 +469,14 @@ export const AdminUserUpdateRequestSchema = z
     department: z.string().max(80).nullable().optional(),
     /** null = sin jefe; uuid = asignar jefe. El servidor rechaza auto-asignación. */
     managerUserId: z.string().uuid().nullable().optional(),
+    // Fase 24 — permisos granulares (todos opcionales; admin patch-ea solo
+    // los que cambian, audit log registra el diff).
+    canDownloadAttachments: z.boolean().optional(),
+    canShareExternally: z.boolean().optional(),
+    canCreateGroups: z.boolean().optional(),
+    canInviteUsers: z.boolean().optional(),
+    canInitiateCalls: z.boolean().optional(),
+    maxAttachmentMb: z.number().int().min(1).max(500).optional(),
   })
   .refine(
     (v) =>
@@ -452,7 +487,13 @@ export const AdminUserUpdateRequestSchema = z
       v.status !== undefined ||
       v.jobTitle !== undefined ||
       v.department !== undefined ||
-      v.managerUserId !== undefined,
+      v.managerUserId !== undefined ||
+      v.canDownloadAttachments !== undefined ||
+      v.canShareExternally !== undefined ||
+      v.canCreateGroups !== undefined ||
+      v.canInviteUsers !== undefined ||
+      v.canInitiateCalls !== undefined ||
+      v.maxAttachmentMb !== undefined,
     { message: "al menos un campo debe cambiar" },
   );
 export type AdminUserUpdateRequest = z.infer<

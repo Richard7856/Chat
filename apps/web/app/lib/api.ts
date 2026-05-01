@@ -3,6 +3,20 @@ const API_BASE =
 
 export const SESSION_STORAGE_KEY = "euromex.session";
 
+/**
+ * Permisos granulares (Fase 24). Coinciden con UserPermissionsSchema en el
+ * shared package — duplicados aquí en la sesión local para no tener que
+ * hacer fetch de /auth/me cada vez que el cliente decide ocultar UI.
+ */
+export interface SessionPermissions {
+  canDownloadAttachments: boolean;
+  canShareExternally: boolean;
+  canCreateGroups: boolean;
+  canInviteUsers: boolean;
+  canInitiateCalls: boolean;
+  maxAttachmentMb: number;
+}
+
 export interface StoredSession {
   accessToken: string;
   expiresInSec: number;
@@ -11,6 +25,8 @@ export interface StoredSession {
     username: string;
     displayName: string;
     role: "user" | "admin";
+    /** Fase 24 — opcional para sesiones viejas que no traen permisos. */
+    permissions?: SessionPermissions;
   };
   device: {
     id: string;
@@ -18,6 +34,16 @@ export interface StoredSession {
     platform: "web" | "ios" | "android" | "desktop";
   };
 }
+
+/** Defaults conservadores cuando la sesión es vieja (pre-Fase 24). */
+export const DEFAULT_PERMISSIONS: SessionPermissions = {
+  canDownloadAttachments: true,
+  canShareExternally: false,
+  canCreateGroups: true,
+  canInviteUsers: false,
+  canInitiateCalls: true,
+  maxAttachmentMb: 50,
+};
 
 export function loadSession(): StoredSession | null {
   if (typeof window === "undefined") return null;

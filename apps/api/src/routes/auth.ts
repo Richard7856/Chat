@@ -78,11 +78,54 @@ async function audit(
   );
 }
 
-function buildAuthResponse(
+/**
+ * Carga los permisos granulares (Fase 24) del usuario desde la BD.
+ * Aislado en helper para que cada respuesta de auth los incluya sin
+ * obligar a cada SELECT de auth.ts a traer las 6 columnas extra.
+ */
+async function loadUserPermissions(userId: string) {
+  const r = await pool.query<{
+    can_download_attachments: boolean;
+    can_share_externally: boolean;
+    can_create_groups: boolean;
+    can_invite_users: boolean;
+    can_initiate_calls: boolean;
+    max_attachment_mb: number;
+  }>(
+    `SELECT can_download_attachments, can_share_externally, can_create_groups,
+            can_invite_users, can_initiate_calls, max_attachment_mb
+       FROM users
+      WHERE id = $1`,
+    [userId],
+  );
+  const p = r.rows[0];
+  // Defaults conservadores si por alguna razón el row desapareció
+  if (!p) {
+    return {
+      canDownloadAttachments: true,
+      canShareExternally: false,
+      canCreateGroups: true,
+      canInviteUsers: false,
+      canInitiateCalls: true,
+      maxAttachmentMb: 50,
+    };
+  }
+  return {
+    canDownloadAttachments: p.can_download_attachments,
+    canShareExternally: p.can_share_externally,
+    canCreateGroups: p.can_create_groups,
+    canInviteUsers: p.can_invite_users,
+    canInitiateCalls: p.can_initiate_calls,
+    maxAttachmentMb: p.max_attachment_mb,
+  };
+}
+
+async function buildAuthResponse(
   token: string,
   user: { id: string; username: string; display_name: string; role: "user" | "admin" },
   device: { id: string; device_name: string; platform: string },
-): AuthSuccessResponse {
+): Promise<AuthSuccessResponse> {
+  const permissions = await loadUserPermissions(user.id);
   return AuthSuccessResponseSchema.parse({
     accessToken: token,
     expiresInSec: config.jwtTtlSec,
@@ -91,6 +134,7 @@ function buildAuthResponse(
       username: user.username,
       displayName: user.display_name,
       role: user.role,
+      permissions,
     },
     device: {
       id: device.id,
@@ -242,7 +286,7 @@ export async function authRoutes(app: FastifyInstance) {
       await client.query("COMMIT");
 
       const token = app.jwt.sign({ sub: user.id, did: device.id, role: user.role });
-      return buildAuthResponse(token, user, device);
+      return await buildAuthResponse(token, user, device);
     } catch (err) {
       await client.query("ROLLBACK");
       req.log.error({ err }, "enroll.complete failed");
@@ -342,7 +386,7 @@ export async function authRoutes(app: FastifyInstance) {
     });
 
     const token = app.jwt.sign({ sub: user.id, did: device.id, role: user.role });
-    return buildAuthResponse(token, user, device);
+    return await buildAuthResponse(token, user, device);
   });
 
   // --------------------------------------------------------------------------
@@ -408,7 +452,7 @@ export async function authRoutes(app: FastifyInstance) {
     });
 
     const token = app.jwt.sign({ sub: row.user_id, did: deviceId, role: row.role });
-    return buildAuthResponse(
+    return await buildAuthResponse(
       token,
       { id: row.user_id, username: row.username, display_name: row.display_name, role: row.role },
       { id: deviceId, device_name: row.device_name, platform: row.platform },
@@ -442,6 +486,7 @@ export async function authRoutes(app: FastifyInstance) {
         [req.session!.sub, req.session!.did],
       );
       const r = res.rows[0]!;
+      const permissions = await loadUserPermissions(r.id);
       return {
         user: {
           id: r.id,
@@ -450,6 +495,7 @@ export async function authRoutes(app: FastifyInstance) {
           email: r.email,
           role: r.role,
           receivesSecurityAlerts: r.receives_security_alerts,
+          permissions,
         },
         device: {
           id: r.device_id,

@@ -91,6 +91,15 @@ interface MeResponse {
     displayName: string;
     email: string | null;
     role: "user" | "admin";
+    /** Fase 24 — opcional para tolerar APIs viejos que aún no lo devuelven. */
+    permissions?: {
+      canDownloadAttachments: boolean;
+      canShareExternally: boolean;
+      canCreateGroups: boolean;
+      canInviteUsers: boolean;
+      canInitiateCalls: boolean;
+      maxAttachmentMb: number;
+    };
   };
   device: {
     id: string;
@@ -992,7 +1001,10 @@ export default function ChatPage() {
               ref={scrollRef}
               className="relative flex-1 overflow-y-auto px-4 py-4"
             >
-              <Watermark username={me.user.username} />
+              <Watermark
+                username={me.user.username}
+                intense={me.user.permissions?.canShareExternally === false}
+              />
 
               <div className="relative z-[2] space-y-1">
                 {messages.map((msg) => {

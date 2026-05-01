@@ -19,97 +19,36 @@ import { pool } from "../db/pg.js";
 // Users
 // ---------------------------------------------------------------------------
 
-export async function listAdminUsers(): Promise<AdminUserListItem[]> {
-  const r = await pool.query<{
-    id: string;
-    username: string;
-    display_name: string;
-    email: string | null;
-    role: "user" | "admin";
-    receives_security_alerts: boolean;
-    status: "active" | "disabled";
-    active_devices_count: string;
-    last_seen_at: Date | null;
-    created_at: Date;
-    job_title: string | null;
-    department: string | null;
-    manager_user_id: string | null;
-    manager_display_name: string | null;
-  }>(
-    // LEFT JOIN a sí misma para traer el nombre del jefe directo en una sola query
-    `SELECT u.id, u.username, u.display_name, u.email, u.role,
-            u.receives_security_alerts, u.status, u.created_at,
-            u.job_title, u.department, u.manager_user_id,
-            m.display_name AS manager_display_name,
-            COALESCE((
-              SELECT COUNT(*) FROM devices d
-               WHERE d.user_id = u.id AND d.status = 'active'
-            ), 0) AS active_devices_count,
-            (SELECT MAX(d.last_seen_at) FROM devices d WHERE d.user_id = u.id) AS last_seen_at
-       FROM users u
-       LEFT JOIN users m ON m.id = u.manager_user_id
-      ORDER BY u.created_at DESC`,
-  );
-  return r.rows.map((row) => ({
-    id: row.id,
-    username: row.username,
-    displayName: row.display_name,
-    email: row.email,
-    role: row.role,
-    receivesSecurityAlerts: row.receives_security_alerts,
-    status: row.status,
-    activeDevicesCount: Number(row.active_devices_count),
-    lastSeenAt: row.last_seen_at ? row.last_seen_at.toISOString() : null,
-    createdAt: row.created_at.toISOString(),
-    jobTitle: row.job_title,
-    department: row.department,
-    managerUserId: row.manager_user_id,
-    managerDisplayName: row.manager_display_name,
-  }));
-}
+/**
+ * Tipo de las columnas crudas que devuelven las queries de users (lista
+ * y detalle). Aislado para no duplicar la definición y poder reusar el
+ * mismo rowToAdminUser.
+ */
+type RawAdminUserRow = {
+  id: string;
+  username: string;
+  display_name: string;
+  email: string | null;
+  role: "user" | "admin";
+  receives_security_alerts: boolean;
+  status: "active" | "disabled";
+  active_devices_count: string;
+  last_seen_at: Date | null;
+  created_at: Date;
+  job_title: string | null;
+  department: string | null;
+  manager_user_id: string | null;
+  manager_display_name: string | null;
+  // Fase 24
+  can_download_attachments: boolean;
+  can_share_externally: boolean;
+  can_create_groups: boolean;
+  can_invite_users: boolean;
+  can_initiate_calls: boolean;
+  max_attachment_mb: number;
+};
 
-export async function countActiveAdmins(): Promise<number> {
-  const r = await pool.query<{ n: string }>(
-    "SELECT COUNT(*)::text AS n FROM users WHERE role = 'admin' AND status = 'active'",
-  );
-  return Number(r.rows[0]?.n ?? "0");
-}
-
-export async function getUserForAdmin(
-  id: string,
-): Promise<AdminUserListItem | null> {
-  const list = await pool.query<{
-    id: string;
-    username: string;
-    display_name: string;
-    email: string | null;
-    role: "user" | "admin";
-    receives_security_alerts: boolean;
-    status: "active" | "disabled";
-    active_devices_count: string;
-    last_seen_at: Date | null;
-    created_at: Date;
-    job_title: string | null;
-    department: string | null;
-    manager_user_id: string | null;
-    manager_display_name: string | null;
-  }>(
-    `SELECT u.id, u.username, u.display_name, u.email, u.role,
-            u.receives_security_alerts, u.status, u.created_at,
-            u.job_title, u.department, u.manager_user_id,
-            m.display_name AS manager_display_name,
-            COALESCE((
-              SELECT COUNT(*) FROM devices d
-               WHERE d.user_id = u.id AND d.status = 'active'
-            ), 0) AS active_devices_count,
-            (SELECT MAX(d.last_seen_at) FROM devices d WHERE d.user_id = u.id) AS last_seen_at
-       FROM users u
-       LEFT JOIN users m ON m.id = u.manager_user_id
-      WHERE u.id = $1`,
-    [id],
-  );
-  const row = list.rows[0];
-  if (!row) return null;
+function rowToAdminUser(row: RawAdminUserRow): AdminUserListItem {
   return {
     id: row.id,
     username: row.username,
@@ -125,7 +64,63 @@ export async function getUserForAdmin(
     department: row.department,
     managerUserId: row.manager_user_id,
     managerDisplayName: row.manager_display_name,
+    permissions: {
+      canDownloadAttachments: row.can_download_attachments,
+      canShareExternally: row.can_share_externally,
+      canCreateGroups: row.can_create_groups,
+      canInviteUsers: row.can_invite_users,
+      canInitiateCalls: row.can_initiate_calls,
+      maxAttachmentMb: row.max_attachment_mb,
+    },
   };
+}
+
+/** Columnas SELECT compartidas por la lista y el detalle de admin. */
+const ADMIN_USER_SELECT = `
+  u.id, u.username, u.display_name, u.email, u.role,
+  u.receives_security_alerts, u.status, u.created_at,
+  u.job_title, u.department, u.manager_user_id,
+  u.can_download_attachments, u.can_share_externally,
+  u.can_create_groups, u.can_invite_users, u.can_initiate_calls,
+  u.max_attachment_mb,
+  m.display_name AS manager_display_name,
+  COALESCE((
+    SELECT COUNT(*) FROM devices d
+     WHERE d.user_id = u.id AND d.status = 'active'
+  ), 0) AS active_devices_count,
+  (SELECT MAX(d.last_seen_at) FROM devices d WHERE d.user_id = u.id) AS last_seen_at
+`;
+
+export async function listAdminUsers(): Promise<AdminUserListItem[]> {
+  const r = await pool.query<RawAdminUserRow>(
+    `SELECT ${ADMIN_USER_SELECT}
+       FROM users u
+       LEFT JOIN users m ON m.id = u.manager_user_id
+      ORDER BY u.created_at DESC`,
+  );
+  return r.rows.map(rowToAdminUser);
+}
+
+export async function countActiveAdmins(): Promise<number> {
+  const r = await pool.query<{ n: string }>(
+    "SELECT COUNT(*)::text AS n FROM users WHERE role = 'admin' AND status = 'active'",
+  );
+  return Number(r.rows[0]?.n ?? "0");
+}
+
+export async function getUserForAdmin(
+  id: string,
+): Promise<AdminUserListItem | null> {
+  const list = await pool.query<RawAdminUserRow>(
+    `SELECT ${ADMIN_USER_SELECT}
+       FROM users u
+       LEFT JOIN users m ON m.id = u.manager_user_id
+      WHERE u.id = $1`,
+    [id],
+  );
+  const row = list.rows[0];
+  if (!row) return null;
+  return rowToAdminUser(row);
 }
 
 /**
@@ -193,6 +188,31 @@ export async function updateUserAsAdmin(
   if (patch.managerUserId !== undefined) {
     sets.push(`manager_user_id = $${i++}`);
     values.push(patch.managerUserId);
+  }
+  // Fase 24 — permisos granulares
+  if (patch.canDownloadAttachments !== undefined) {
+    sets.push(`can_download_attachments = $${i++}`);
+    values.push(patch.canDownloadAttachments);
+  }
+  if (patch.canShareExternally !== undefined) {
+    sets.push(`can_share_externally = $${i++}`);
+    values.push(patch.canShareExternally);
+  }
+  if (patch.canCreateGroups !== undefined) {
+    sets.push(`can_create_groups = $${i++}`);
+    values.push(patch.canCreateGroups);
+  }
+  if (patch.canInviteUsers !== undefined) {
+    sets.push(`can_invite_users = $${i++}`);
+    values.push(patch.canInviteUsers);
+  }
+  if (patch.canInitiateCalls !== undefined) {
+    sets.push(`can_initiate_calls = $${i++}`);
+    values.push(patch.canInitiateCalls);
+  }
+  if (patch.maxAttachmentMb !== undefined) {
+    sets.push(`max_attachment_mb = $${i++}`);
+    values.push(patch.maxAttachmentMb);
   }
   sets.push(`updated_at = now()`);
   values.push(id);
