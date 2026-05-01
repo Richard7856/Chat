@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
+  AtSign,
+  Bell,
+  BellOff,
   CalendarDays,
   ClipboardList,
   CalendarPlus,
@@ -17,6 +20,7 @@ import {
   Send,
   ShieldCheck,
   Sparkles,
+  Star,
 } from "lucide-react";
 import type {
   AttachmentPayload,
@@ -53,7 +57,7 @@ import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { SecurityBanner } from "../../components/security-banner";
 import { Watermark } from "../../components/watermark";
-import { AttachmentsPanel } from "../../components/attachments-panel";
+import { MediaPanel } from "../../components/media-panel";
 import { AttachmentOptionsModal } from "../../components/attachment-options-modal";
 import { ActivityCard } from "../../components/activity-card";
 import { TaskCard } from "../../components/task-card";
@@ -68,6 +72,16 @@ import {
   formatHour,
   formatWhen,
 } from "./chat-utils";
+
+/** Convierte una VAPID public key (base64url) al Uint8Array que necesita PushManager. */
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const arr = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) arr[i] = rawData.charCodeAt(i);
+  return arr;
+}
 
 interface MeResponse {
   user: {
@@ -115,6 +129,15 @@ export default function ChatPage() {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [showActivityModal, setShowActivityModal] = useState(false);
   const [showTaskModal, setShowTaskModal] = useState(false);
+  // Fase 17: mensajes guardados (starred)
+  const [starredIds, setStarredIds] = useState<Set<string>>(new Set());
+  // Fase 18: presencia y read receipts
+  // presenceMap: userId → { online, lastSeenAt }
+  const [presenceMap, setPresenceMap] = useState<Map<string, { online: boolean; lastSeenAt: string | null }>>(new Map());
+  // Fase 19: push notifications permission state
+  const [pushState, setPushState] = useState<"unknown" | "granted" | "denied" | "subscribing">("unknown");
+  // Fase 19: @mention autocomplete
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selectedIdRef = useRef<string | null>(null);
@@ -252,6 +275,27 @@ export default function ChatPage() {
     return () => closeSocket();
   }, [router, refreshConversations]);
 
+  // Fase 17: cargar mensajes guardados del usuario
+  useEffect(() => {
+    if (!me) return;
+    api<{ messages: Array<{ messageId: string }> }>("/starred-messages", { method: "GET", auth: true })
+      .then((res) => setStarredIds(new Set(res.messages.map((m) => m.messageId))))
+      .catch(() => {});
+  }, [me]);
+
+  // Fase 19: revisar estado actual del permiso de notificaciones
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setPushState(
+        Notification.permission === "granted"
+          ? "granted"
+          : Notification.permission === "denied"
+          ? "denied"
+          : "unknown",
+      );
+    }
+  }, []);
+
   // ---------------- Socket listeners ----------------
   useEffect(() => {
     if (!me || !myKeypair) return;
@@ -300,11 +344,47 @@ export default function ChatPage() {
       });
     };
 
+    // Fase 18: presencia
+    const onUserOnline = ({ userId }: { userId: string }) => {
+      setPresenceMap((prev) => {
+        const next = new Map(prev);
+        next.set(userId, { online: true, lastSeenAt: null });
+        return next;
+      });
+    };
+    const onUserOffline = ({ userId, lastSeenAt }: { userId: string; lastSeenAt: string }) => {
+      setPresenceMap((prev) => {
+        const next = new Map(prev);
+        next.set(userId, { online: false, lastSeenAt });
+        return next;
+      });
+    };
+    // Fase 18: read receipts — actualizar lastReadAt del miembro en la conversación
+    const onMessageRead = ({ conversationId, userId, lastReadAt }: { conversationId: string; userId: string; lastReadAt: string }) => {
+      setConversations((prev) =>
+        prev.map((c) => {
+          if (c.id !== conversationId) return c;
+          return {
+            ...c,
+            members: c.members.map((m) =>
+              m.userId === userId ? { ...m, lastReadAt } : m,
+            ),
+          };
+        }),
+      );
+    };
+
     socket.on("message:new", onNew);
     socket.on("conversation:updated", onConvUpdated);
+    socket.on("user:online", onUserOnline);
+    socket.on("user:offline", onUserOffline);
+    socket.on("message:read", onMessageRead);
     return () => {
       socket.off("message:new", onNew);
       socket.off("conversation:updated", onConvUpdated);
+      socket.off("user:online", onUserOnline);
+      socket.off("user:offline", onUserOffline);
+      socket.off("message:read", onMessageRead);
     };
   }, [me, myKeypair, decryptMessage, refreshDeviceKeys]);
 
@@ -364,6 +444,8 @@ export default function ChatPage() {
       /** Fase 14: si el mensaje referencia un adjunto, pasamos el ID para
        *  que el server vincule attachment.message_id. */
       attachmentId?: string;
+      /** Fase 19: user IDs mencionados con @, para push offline. */
+      mentionedUserIds?: string[];
     }): Promise<void> => {
       if (!selectedId || !myKeypair) throw new Error("no_conversation");
       await refreshDeviceKeys(selectedId);
@@ -410,6 +492,7 @@ export default function ChatPage() {
             contentType: params.contentType,
             envelopes,
             attachmentId: params.attachmentId,
+            mentionedUserIds: params.mentionedUserIds,
           },
           (res) => {
             clearTimeout(timer);
@@ -436,17 +519,82 @@ export default function ChatPage() {
     [selectedId, myKeypair, refreshDeviceKeys],
   );
 
+  // Fase 17: toggle estrella en un mensaje
+  async function handleStar(msgId: string, convId: string) {
+    const isStarred = starredIds.has(msgId);
+    const method = isStarred ? "DELETE" : "POST";
+    // Actualizar estado optimistamente
+    setStarredIds((prev) => {
+      const next = new Set(prev);
+      if (isStarred) next.delete(msgId); else next.add(msgId);
+      return next;
+    });
+    try {
+      await api(`/conversations/${convId}/messages/${msgId}/star`, { method, auth: true });
+    } catch {
+      // Revertir si falla
+      setStarredIds((prev) => {
+        const next = new Set(prev);
+        if (isStarred) next.add(msgId); else next.delete(msgId);
+        return next;
+      });
+    }
+  }
+
+  // Fase 19: suscribir dispositivo a Web Push
+  async function subscribeToPush() {
+    if (typeof window === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    setPushState("subscribing");
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        setPushState("denied");
+        return;
+      }
+      // Obtener la VAPID key del servidor
+      const { vapidPublicKey } = await api<{ vapidPublicKey: string }>("/push/vapid-key", { method: "GET" });
+      if (!vapidPublicKey) {
+        setPushState("unknown");
+        return;
+      }
+      const reg = await navigator.serviceWorker.ready;
+      // urlB64ToUint8Array convierte la VAPID public key al formato que necesita pushManager
+      const appServerKey = urlBase64ToUint8Array(vapidPublicKey).buffer as ArrayBuffer;
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: appServerKey });
+      const json = sub.toJSON();
+      await api("/push/subscribe", {
+        method: "POST",
+        auth: true,
+        body: {
+          endpoint: json.endpoint,
+          p256dh: json.keys?.p256dh ?? "",
+          auth: json.keys?.auth ?? "",
+        },
+      });
+      setPushState("granted");
+    } catch {
+      setPushState("unknown");
+    }
+  }
+
   async function onSend(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedId || !draft.trim() || !me || !myKeypair) return;
+    if (!selectedId || !draft.trim() || !me || !myKeypair || !selectedConv) return;
     const content = draft.trim();
     setDraft("");
+    setMentionQuery(null);
     setSending(true);
+    // Extraer @usernames del mensaje y mapear a userIds
+    const mentionMatches = [...content.matchAll(/@([\w.]+)/g)].map((m) => m[1]);
+    const mentionedUserIds = selectedConv.members
+      .filter((m) => mentionMatches.includes(m.username) && m.userId !== me.user.id)
+      .map((m) => m.userId);
     try {
       await sendEncrypted({
         plaintextBytes: await encodeUtf8(content),
         contentType: "text/plain",
         localPlaintext: content,
+        mentionedUserIds: mentionedUserIds.length > 0 ? mentionedUserIds : undefined,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "send_failed");
@@ -652,11 +800,24 @@ export default function ChatPage() {
                     : "hover:bg-secondary/50",
                 ].join(" ")}
               >
-                <Avatar
-                  size="md"
-                  username={peer?.username ?? conv.name ?? conv.id}
-                  displayName={peer?.displayName ?? conv.name ?? "Grupo"}
-                />
+                {/* Fase 18: presencia — punto verde en el avatar del peer DM */}
+                {(() => {
+                  const peerId = conv.type === "dm"
+                    ? conv.members.find((m) => m.userId !== me.user.id)?.userId
+                    : null;
+                  return (
+                    <div className="relative shrink-0">
+                      <Avatar
+                        size="md"
+                        username={peer?.username ?? conv.name ?? conv.id}
+                        displayName={peer?.displayName ?? conv.name ?? "Grupo"}
+                      />
+                      {peerId && presenceMap.get(peerId)?.online && (
+                        <span className="absolute bottom-0 right-0 size-2.5 rounded-full bg-green-400 ring-2 ring-background" />
+                      )}
+                    </div>
+                  );
+                })()}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline justify-between gap-2">
                     <span
@@ -766,6 +927,30 @@ export default function ChatPage() {
 
             <SecurityBanner conversationId={selectedConv.id} />
 
+            {/* Fase 19: Banner de notificaciones push (solo si no se ha dado permiso) */}
+            {pushState === "unknown" && (
+              <div className="flex items-center justify-between gap-3 bg-indigo-950/60 border-b border-indigo-800/40 px-4 py-2 text-xs text-indigo-200">
+                <div className="flex items-center gap-2">
+                  <Bell size={13} />
+                  <span>Activa las notificaciones para recibir mensajes cuando no estés en la app.</span>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    className="text-indigo-300 hover:text-white underline"
+                    onClick={() => void subscribeToPush()}
+                  >
+                    Activar
+                  </button>
+                  <button
+                    className="text-indigo-400/60 hover:text-white"
+                    onClick={() => setPushState("denied")}
+                  >
+                    <BellOff size={13} />
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Messages */}
             <div
               ref={scrollRef}
@@ -788,11 +973,21 @@ export default function ChatPage() {
                   const sender = selectedConv.members.find(
                     (m) => m.userId === msg.senderUserId,
                   );
+                  // Fase 18: ✓✓ — ¿al menos un miembro (no el sender) leyó hasta aquí?
+                  const otherMembers = selectedConv.members.filter((m) => m.userId !== me.user.id);
+                  const readByAny = mine && otherMembers.some(
+                    (m) => m.lastReadAt && m.lastReadAt >= msg.createdAt,
+                  );
+                  const readByAll = mine && otherMembers.length > 0 && otherMembers.every(
+                    (m) => m.lastReadAt && m.lastReadAt >= msg.createdAt,
+                  );
+                  const isStarred = starredIds.has(msg.id);
+
                   return (
                     <div
                       key={msg.id}
                       className={[
-                        "flex gap-2",
+                        "group flex gap-2",
                         mine ? "justify-end" : "justify-start",
                       ].join(" ")}
                     >
@@ -803,6 +998,17 @@ export default function ChatPage() {
                           displayName={sender?.displayName ?? "?"}
                           className="mt-1"
                         />
+                      )}
+                      {/* ⭐ Star button — aparece al hover, del lado opuesto al bubble */}
+                      {mine && (
+                        <button
+                          type="button"
+                          className="self-center opacity-0 group-hover:opacity-100 transition text-yellow-400/60 hover:text-yellow-400"
+                          title={isStarred ? "Quitar de guardados" : "Guardar mensaje"}
+                          onClick={() => void handleStar(msg.id, selectedConv.id)}
+                        >
+                          <Star size={13} fill={isStarred ? "currentColor" : "none"} />
+                        </button>
                       )}
                       <div
                         className={[
@@ -820,13 +1026,33 @@ export default function ChatPage() {
                         <MessageBody msg={msg} mine={mine} currentUserId={me.user.id} />
                         <div
                           className={[
-                            "mt-1 text-right text-[10px]",
+                            "mt-1 flex items-center justify-end gap-1 text-[10px]",
                             mine ? "text-primary-foreground/70" : "text-muted-foreground",
                           ].join(" ")}
                         >
                           {formatHour(msg.createdAt)}
+                          {/* Fase 18: ✓✓ read receipts (solo mensajes propios) */}
+                          {mine && (
+                            <span
+                              title={readByAll ? "Visto por todos" : readByAny ? "Visto" : "Enviado"}
+                              className={readByAny ? "text-blue-400" : "opacity-50"}
+                            >
+                              {readByAny ? "✓✓" : "✓"}
+                            </span>
+                          )}
                         </div>
                       </div>
+                      {/* ⭐ Star button para mensajes recibidos */}
+                      {!mine && (
+                        <button
+                          type="button"
+                          className="self-center opacity-0 group-hover:opacity-100 transition text-yellow-400/60 hover:text-yellow-400"
+                          title={isStarred ? "Quitar de guardados" : "Guardar mensaje"}
+                          onClick={() => void handleStar(msg.id, selectedConv.id)}
+                        >
+                          <Star size={13} fill={isStarred ? "currentColor" : "none"} />
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -891,18 +1117,58 @@ export default function ChatPage() {
                 >
                   <ClipboardList className="size-4" />
                 </Button>
-                <Input
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  placeholder={
-                    uploading
-                      ? "Cifrando y subiendo…"
-                      : "Escribe un mensaje cifrado…"
-                  }
-                  disabled={sending || uploading}
-                  className="h-10 rounded-full px-4"
-                  autoFocus
-                />
+                <div className="relative flex-1">
+                  {/* Fase 19: @mention autocomplete dropdown */}
+                  {mentionQuery !== null && selectedConv && (() => {
+                    const q = mentionQuery.toLowerCase();
+                    const filtered = selectedConv.members.filter(
+                      (m) => m.userId !== me.user.id &&
+                        (m.username.toLowerCase().includes(q) || m.displayName.toLowerCase().includes(q)),
+                    );
+                    if (filtered.length === 0) return null;
+                    return (
+                      <div className="absolute bottom-full mb-1 left-0 w-full bg-[#1e1e3a] border border-white/10 rounded-lg overflow-hidden shadow-xl z-50 max-h-40 overflow-y-auto">
+                        {filtered.map((m) => (
+                          <button
+                            key={m.userId}
+                            type="button"
+                            className="w-full text-left px-3 py-2 text-sm text-white hover:bg-white/10 flex items-center gap-2"
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              // Reemplaza el último @query con @username
+                              setDraft((d) => d.replace(/@[\w.]*$/, `@${m.username} `));
+                              setMentionQuery(null);
+                            }}
+                          >
+                            <span className="font-medium text-indigo-300">@{m.username}</span>
+                            <span className="text-white/50 text-xs">{m.displayName}</span>
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                  <Input
+                    value={draft}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setDraft(val);
+                      // Detectar si estamos escribiendo una mención @
+                      const match = val.match(/@([\w.]*)$/);
+                      setMentionQuery(match ? (match[1] ?? null) : null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setMentionQuery(null);
+                    }}
+                    placeholder={
+                      uploading
+                        ? "Cifrando y subiendo…"
+                        : "Escribe un mensaje cifrado…"
+                    }
+                    disabled={sending || uploading}
+                    className="h-10 rounded-full px-4"
+                    autoFocus
+                  />
+                </div>
                 <Button
                   type="submit"
                   size="icon"
@@ -936,11 +1202,12 @@ export default function ChatPage() {
           </div>
         )}
 
-        {/* Fase 14: Panel de documentos lateral */}
+        {/* Fases 14+17: Panel de medios lateral */}
         {showDocsPanel && selectedConv && (
-          <AttachmentsPanel
+          <MediaPanel
             conversationId={selectedConv.id}
             messageCache={attachmentCache}
+            messages={messages}
             currentUserId={me.user.id}
             onClose={() => setShowDocsPanel(false)}
           />

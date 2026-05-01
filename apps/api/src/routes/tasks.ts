@@ -16,6 +16,7 @@ import {
   broadcastSystemMessage,
   broadcastTaskUpdated,
 } from "../chat/socket.js";
+import { sendPushToTaskAssignees } from "../lib/push.js";
 
 // ─── DB row shapes ──────────────────────────────────────────────────────────
 
@@ -163,6 +164,11 @@ export async function taskRoutes(app: FastifyInstance) {
     );
 
     const task = await getTaskWithAssignees(taskId);
+
+    // Push a asignados offline (puede incluir al creador si se asignó a sí mismo)
+    const creatorName = task?.creatorDisplayName ?? "Alguien";
+    sendPushToTaskAssignees(app, allAssignees, title, creatorName, conversationId ?? null).catch(() => {});
+
     return reply.status(201).send(task);
   });
 

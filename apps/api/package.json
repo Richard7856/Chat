@@ -11,7 +11,8 @@
     "lint": "echo \"(lint pendiente)\"",
     "test": "echo \"(tests pendientes)\"",
     "create-admin": "tsx src/scripts/create-admin.ts",
-    "reset-password": "tsx src/scripts/reset-password.ts"
+    "reset-password": "tsx src/scripts/reset-password.ts",
+    "generate-vapid": "tsx src/scripts/generate-vapid.ts"
   },
   "dependencies": {
     "@euromex/shared": "workspace:*",
@@ -30,12 +31,14 @@
     "pino": "^9.5.0",
     "pino-pretty": "^13.0.0",
     "qrcode": "^1.5.4",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
     "@types/pg": "^8.11.10",
     "@types/qrcode": "^1.5.5",
+    "@types/web-push": "^3.6.4",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }

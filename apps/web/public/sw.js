@@ -13,7 +13,7 @@
  *   • Ignoramos explícitamente `/socket.io/*` (no cross-origin? por si acaso).
  */
 
-const VERSION = "v1";
+const VERSION = "v2"; // v2: Web Push support (Fase 19)
 const STATIC_CACHE = `euromex-static-${VERSION}`;
 const PAGE_CACHE = `euromex-pages-${VERSION}`;
 const OFFLINE_URL = "/offline.html";
@@ -76,6 +76,72 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(networkFirst(req));
     return;
   }
+});
+
+// ============================================================================
+// Fase 19 — Web Push
+// ============================================================================
+
+/**
+ * Recibe el payload enviado desde el servidor (lib/push.ts) y muestra una
+ * notificación nativa. El cliente no descifra nada aquí — el payload ya viene
+ * como texto legible (título/cuerpo) porque el contenido del mensaje sigue
+ * cifrado E2EE en la BD. El push solo es un "hey, abre la app".
+ */
+self.addEventListener("push", (event) => {
+  if (!event.data) return;
+
+  let data = {};
+  try {
+    data = event.data.json();
+  } catch {
+    return;
+  }
+
+  const { title = "Euromex Chat", body = "Tienes un mensaje nuevo", conversationId, type } = data;
+
+  const options = {
+    body,
+    icon: "/icon",
+    badge: "/icon",
+    tag: conversationId ?? "euromex-push",        // agrupa notificaciones del mismo chat
+    renotify: true,                                 // vibrar aunque reemplace una anterior
+    data: { conversationId, type },
+    actions: [],
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+/**
+ * Cuando el usuario hace click en la notificación:
+ * - Si la app ya está abierta, enfocarla y navegar a la conversación.
+ * - Si no, abrirla en la URL correcta.
+ */
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+
+  const { conversationId } = event.notification.data ?? {};
+  const targetUrl = conversationId
+    ? `/app/chat?conv=${conversationId}`
+    : "/app/chat";
+
+  event.waitUntil(
+    (async () => {
+      const allClients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      // Buscar una pestaña ya abierta con nuestra app
+      for (const client of allClients) {
+        const url = new URL(client.url);
+        if (url.pathname.startsWith("/app")) {
+          await client.navigate(targetUrl);
+          client.focus();
+          return;
+        }
+      }
+      // No hay pestaña abierta: abrir una nueva
+      await self.clients.openWindow(targetUrl);
+    })(),
+  );
 });
 
 async function cacheFirst(req) {

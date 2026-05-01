@@ -8,7 +8,9 @@ import {
   CheckSquare,
   ChevronLeft,
   ChevronRight,
+  Grid3X3,
   Loader2,
+  Rows3,
   X,
 } from "lucide-react";
 import type { Activity, Task } from "@euromex/shared";
@@ -25,11 +27,26 @@ function startOfMonth(y: number, m: number): Date {
 function endOfMonth(y: number, m: number): Date {
   return new Date(y, m + 1, 0, 23, 59, 59, 999);
 }
+/** Returns Monday of the week that contains `date` (ISO week start) */
+function startOfWeek(date: Date): Date {
+  const d = new Date(date);
+  const day = d.getDay(); // 0 = Sun
+  const diff = day === 0 ? -6 : 1 - day; // shift to Monday
+  d.setDate(d.getDate() + diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+function addDays(date: Date, n: number): Date {
+  const d = new Date(date);
+  d.setDate(d.getDate() + n);
+  return d;
+}
 function isoDate(d: Date): string {
   return d.toISOString().split("T")[0]!;
 }
 
 type Filter = "all" | "activities" | "tasks" | "mine";
+type ViewMode = "month" | "week";
 
 // ─── Calendar cell item ───────────────────────────────────────────────────────
 
@@ -55,6 +72,9 @@ export default function CalendarPage() {
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth()); // 0-indexed
+  const [viewMode, setViewMode] = useState<ViewMode>("month");
+  // Semana actual (lunes): cuando el modo semanal está activo
+  const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek(today));
 
   // ── Auth bootstrap ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -67,11 +87,9 @@ export default function CalendarPage() {
       .catch(() => router.replace("/login"));
   }, [router]);
 
-  // ── Fetch data for the current month ───────────────────────────────────────
-  const fetchMonth = useCallback(async (y: number, m: number) => {
+  // ── Fetch data — used by both month and week view ──────────────────────────
+  const fetchRange = useCallback(async (from: string, to: string) => {
     setLoading(true);
-    const from = isoDate(startOfMonth(y, m));
-    const to = isoDate(endOfMonth(y, m));
     try {
       const [actRes, taskRes] = await Promise.all([
         api<{ activities: Activity[] }>(`/activities?from=${from}T00:00:00Z&to=${to}T23:59:59Z`, {
@@ -93,16 +111,29 @@ export default function CalendarPage() {
   }, []);
 
   useEffect(() => {
-    if (me) fetchMonth(year, month);
-  }, [me, year, month, fetchMonth]);
+    if (!me) return;
+    if (viewMode === "month") {
+      fetchRange(isoDate(startOfMonth(year, month)), isoDate(endOfMonth(year, month)));
+    } else {
+      fetchRange(isoDate(weekStart), isoDate(addDays(weekStart, 6)));
+    }
+  }, [me, year, month, viewMode, weekStart, fetchRange]);
 
-  function prevMonth() {
-    if (month === 0) { setMonth(11); setYear((y) => y - 1); }
-    else setMonth((m) => m - 1);
+  function prevPeriod() {
+    if (viewMode === "week") {
+      setWeekStart((w) => addDays(w, -7));
+    } else {
+      if (month === 0) { setMonth(11); setYear((y) => y - 1); }
+      else setMonth((m) => m - 1);
+    }
   }
-  function nextMonth() {
-    if (month === 11) { setMonth(0); setYear((y) => y + 1); }
-    else setMonth((m) => m + 1);
+  function nextPeriod() {
+    if (viewMode === "week") {
+      setWeekStart((w) => addDays(w, 7));
+    } else {
+      if (month === 11) { setMonth(0); setYear((y) => y + 1); }
+      else setMonth((m) => m + 1);
+    }
   }
 
   // ── Build day map ───────────────────────────────────────────────────────────
@@ -133,6 +164,14 @@ export default function CalendarPage() {
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const monthName = new Date(year, month, 1).toLocaleDateString("es-MX", { month: "long", year: "numeric" });
 
+  // Weekly view: 7 days Mon–Sun starting from weekStart
+  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+  const weekLabel = (() => {
+    const s = weekStart.toLocaleDateString("es-MX", { day: "numeric", month: "short" });
+    const e = addDays(weekStart, 6).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" });
+    return `${s} – ${e}`;
+  })();
+
   const cells: Array<number | null> = [
     ...Array<null>(firstDayOfMonth).fill(null),
     ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
@@ -159,15 +198,44 @@ export default function CalendarPage() {
         {/* Month navigation + filters */}
         <div className="mb-4 flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" className="size-8" onClick={prevMonth}>
+            <Button variant="ghost" size="icon" className="size-8" onClick={prevPeriod}>
               <ChevronLeft className="size-4" />
             </Button>
-            <span className="min-w-[160px] text-center text-sm font-semibold capitalize">
-              {monthName}
+            <span className="min-w-[180px] text-center text-sm font-semibold capitalize">
+              {viewMode === "month" ? monthName : weekLabel}
             </span>
-            <Button variant="ghost" size="icon" className="size-8" onClick={nextMonth}>
+            <Button variant="ghost" size="icon" className="size-8" onClick={nextPeriod}>
               <ChevronRight className="size-4" />
             </Button>
+          </div>
+
+          {/* Fase 20: toggle vista mensual / semanal */}
+          <div className="flex rounded-lg border border-border overflow-hidden text-xs">
+            <button
+              type="button"
+              onClick={() => setViewMode("month")}
+              title="Vista mensual"
+              className={[
+                "flex items-center gap-1 px-3 py-1.5 transition-colors",
+                viewMode === "month" ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:bg-secondary",
+              ].join(" ")}
+            >
+              <Grid3X3 size={13} /> Mes
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode("week");
+                setWeekStart(startOfWeek(today));
+              }}
+              title="Vista semanal"
+              className={[
+                "flex items-center gap-1 px-3 py-1.5 transition-colors",
+                viewMode === "week" ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:bg-secondary",
+              ].join(" ")}
+            >
+              <Rows3 size={13} /> Semana
+            </button>
           </div>
 
           <div className="flex flex-wrap gap-1.5 text-xs">
@@ -189,6 +257,57 @@ export default function CalendarPage() {
           </div>
         </div>
 
+        {/* ── Vista semanal ── */}
+        {viewMode === "week" && (
+          <>
+            <div className="grid grid-cols-7 gap-px rounded-xl border border-border bg-border overflow-hidden">
+              {weekDays.map((day) => {
+                const dateStr = isoDate(day);
+                const items = dayMap.get(dateStr) ?? [];
+                const isToday = dateStr === todayStr;
+                const dayLabel = day.toLocaleDateString("es-MX", { weekday: "short", day: "numeric" });
+                return (
+                  <div
+                    key={dateStr}
+                    className={["min-h-[160px] bg-background p-2", isToday ? "bg-primary/5 ring-inset ring-1 ring-primary/30" : ""].join(" ")}
+                  >
+                    <div className={["mb-2 text-xs font-semibold text-center capitalize", isToday ? "text-primary" : "text-muted-foreground"].join(" ")}>
+                      {dayLabel}
+                    </div>
+                    <div className="space-y-1">
+                      {items.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => setSelected(item)}
+                          className={[
+                            "flex w-full items-start gap-1 rounded px-1.5 py-1 text-[11px] text-left transition-colors hover:opacity-80",
+                            item.kind === "activity"
+                              ? "bg-primary/15 text-primary"
+                              : "bg-green-500/15 text-green-400",
+                          ].join(" ")}
+                        >
+                          {item.kind === "activity" ? (
+                            <CalendarDays className="size-3 shrink-0 mt-0.5" />
+                          ) : (
+                            <CheckSquare className="size-3 shrink-0 mt-0.5" />
+                          )}
+                          <span className="break-words leading-tight">{item.title}</span>
+                        </button>
+                      ))}
+                      {items.length === 0 && (
+                        <p className="text-center text-[10px] text-muted-foreground/40 py-2">–</p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {/* ── Vista mensual ── */}
+        {viewMode === "month" && <>
         {/* Day-of-week headers */}
         <div className="mb-1 grid grid-cols-7 text-center text-[11px] font-medium text-muted-foreground">
           {["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"].map((d) => (
@@ -261,6 +380,7 @@ export default function CalendarPage() {
             <CheckSquare className="size-3 text-green-400" /> Tarea
           </span>
         </div>
+        </>}
       </div>
 
       {/* Detail drawer */}

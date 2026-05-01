@@ -15,6 +15,7 @@ import { conversationRoutes } from "./routes/conversations.js";
 import { attachmentRoutes } from "./routes/attachments.js";
 import { activityRoutes } from "./routes/activities.js";
 import { taskRoutes } from "./routes/tasks.js";
+import { pushRoutes } from "./routes/push.js";
 import { registerSocketIO } from "./chat/socket.js";
 import type { HealthResponse } from "@euromex/shared";
 
@@ -68,6 +69,7 @@ export async function buildServer() {
   await app.register(attachmentRoutes);
   await app.register(activityRoutes);
   await app.register(taskRoutes);
+  await app.register(pushRoutes);
   await app.register(adminRoutes);
 
   // Socket.IO requiere que el servidor HTTP exista; lo montamos después de

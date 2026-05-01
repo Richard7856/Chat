@@ -64,8 +64,9 @@ export async function getConversationMembers(
     display_name: string;
     role: "member" | "admin";
     joined_at: Date;
+    last_read_at: Date | null;
   }>(
-    `SELECT m.user_id, u.username, u.display_name, m.role, m.joined_at
+    `SELECT m.user_id, u.username, u.display_name, m.role, m.joined_at, m.last_read_at
        FROM conversation_members m
        JOIN users u ON u.id = m.user_id
       WHERE m.conversation_id = $1
@@ -78,6 +79,7 @@ export async function getConversationMembers(
     displayName: row.display_name,
     role: row.role,
     joinedAt: row.joined_at.toISOString(),
+    lastReadAt: row.last_read_at ? row.last_read_at.toISOString() : null,
   }));
 }
 
@@ -493,13 +495,15 @@ export async function listMessages(params: {
 export async function markConversationRead(
   userId: string,
   conversationId: string,
-): Promise<void> {
-  await pool.query(
+): Promise<{ lastReadAt: Date }> {
+  const r = await pool.query<{ last_read_at: Date }>(
     `UPDATE conversation_members
         SET last_read_at = now()
-      WHERE user_id = $1 AND conversation_id = $2`,
+      WHERE user_id = $1 AND conversation_id = $2
+      RETURNING last_read_at`,
     [userId, conversationId],
   );
+  return { lastReadAt: r.rows[0]?.last_read_at ?? new Date() };
 }
 
 export async function listUsers(

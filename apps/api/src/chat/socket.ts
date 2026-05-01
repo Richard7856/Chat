@@ -58,6 +58,27 @@ function normalizeEnvelopes(raw: unknown): IncomingEnvelope[] | null {
   return out;
 }
 
+/**
+ * Fase 18 — Presencia online.
+ * Mapa userId → Set<socketId> para manejar múltiples pestañas/dispositivos.
+ * Solo se emite user:offline cuando el Set queda vacío (última conexión cerrada).
+ */
+const onlineSockets = new Map<string, Set<string>>();
+
+/** Mapa userId → ISO timestamp del último disconnect (para "Última vez a las X"). */
+const lastSeenMap = new Map<string, string>();
+
+/** Permite a push.ts y al endpoint de presencia saber si un usuario está online. */
+export function isUserOnline(userId: string): boolean {
+  const sockets = onlineSockets.get(userId);
+  return !!sockets && sockets.size > 0;
+}
+
+/** Devuelve el último timestamp offline de un userId (null si nunca se desconectó en esta sesión). */
+export function getUserLastSeen(userId: string): string | null {
+  return lastSeenMap.get(userId) ?? null;
+}
+
 export function registerSocketIO(app: FastifyInstance): IOServer {
   const io: IOServer = new SocketIOServer(app.server, {
     cors: { origin: config.corsOrigins, credentials: true },
@@ -98,13 +119,52 @@ export function registerSocketIO(app: FastifyInstance): IOServer {
     socket.join(USER_ROOM(session.sub));
     socket.join(DEVICE_ROOM(session.did));
 
+    // Fase 18: registrar presencia
+    if (!onlineSockets.has(session.sub)) onlineSockets.set(session.sub, new Set());
+    const wasOffline = onlineSockets.get(session.sub)!.size === 0;
+    onlineSockets.get(session.sub)!.add(socket.id);
+
     void (async () => {
       const r = await pool.query<{ conversation_id: string }>(
         "SELECT conversation_id FROM conversation_members WHERE user_id = $1",
         [session.sub],
       );
       for (const row of r.rows) socket.join(CONV_ROOM(row.conversation_id));
+
+      // Fase 18: notificar a los miembros de cada conversación que este usuario
+      // acaba de conectarse (solo si venía de offline, para evitar spam por multi-tab).
+      if (wasOffline) {
+        for (const row of r.rows) {
+          socket.to(CONV_ROOM(row.conversation_id)).emit("user:online", { userId: session.sub });
+        }
+      }
     })();
+
+    // Fase 18: manejar desconexión
+    socket.on("disconnect", () => {
+      const sockets = onlineSockets.get(session.sub);
+      if (sockets) {
+        sockets.delete(socket.id);
+        if (sockets.size === 0) {
+          // Última conexión del usuario cerrada — marcar offline
+          onlineSockets.delete(session.sub);
+          const lastSeenAt = new Date().toISOString();
+          lastSeenMap.set(session.sub, lastSeenAt);
+
+          void pool.query<{ conversation_id: string }>(
+            "SELECT conversation_id FROM conversation_members WHERE user_id = $1",
+            [session.sub],
+          ).then((r) => {
+            for (const row of r.rows) {
+              io.to(CONV_ROOM(row.conversation_id)).emit("user:offline", {
+                userId: session.sub,
+                lastSeenAt,
+              });
+            }
+          });
+        }
+      }
+    });
 
     socket.on("conversation:join", async (conversationId, ack) => {
       try {
@@ -125,7 +185,7 @@ export function registerSocketIO(app: FastifyInstance): IOServer {
 
     socket.on("message:send", async (payload, ack) => {
       try {
-        const { conversationId, clientId, contentType, envelopes, attachmentId } = payload;
+        const { conversationId, clientId, contentType, envelopes, attachmentId, mentionedUserIds } = payload;
         if (typeof conversationId !== "string" || typeof clientId !== "string") {
           ack?.({ ok: false, error: "invalid_payload" });
           return;
@@ -166,6 +226,24 @@ export function registerSocketIO(app: FastifyInstance): IOServer {
           contentType: ct,
           envelopes: res.envelopes,
         });
+
+        // Fase 19: push a offline members + menciones
+        // (import lazy para evitar ciclo de dependencias con lib/push.ts)
+        void import("../lib/push.js").then(async ({ sendPushToOfflineMembers, sendPushToMentioned }) => {
+          await sendPushToOfflineMembers(app, conversationId, session.sub).catch(() => {});
+          if (Array.isArray(mentionedUserIds) && mentionedUserIds.length > 0) {
+            // Verificar que todos los mencionados son miembros (seguridad)
+            const members = await pool.query<{ user_id: string }>(
+              "SELECT user_id FROM conversation_members WHERE conversation_id = $1",
+              [conversationId],
+            );
+            const memberSet = new Set(members.rows.map((r) => r.user_id));
+            const validMentions = mentionedUserIds.filter((id) => memberSet.has(id) && id !== session.sub);
+            if (validMentions.length > 0) {
+              await sendPushToMentioned(app, validMentions, conversationId).catch(() => {});
+            }
+          }
+        }).catch(() => {});  // push es best-effort, nunca rompe el flujo del mensaje
 
         // ACK al emisor con la vista del mensaje "sin sobre propio";
         // el emisor renderiza su propio plaintext porque ya lo tiene.

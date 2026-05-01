@@ -20,6 +20,7 @@ import {
   getAlertWatchersInConversation,
   getConversationDeviceKeys,
   getConversationForUser,
+  getConversationMembers,
   insertEncryptedMessage,
   insertSystemMessage,
   isConversationMember,
@@ -35,6 +36,8 @@ import {
   broadcastConversationUpdated,
   broadcastSystemMessage,
 } from "../chat/socket.js";
+import { isUserOnline, getUserLastSeen } from "../chat/socket.js";
+import { pool } from "../db/pg.js";
 
 const DEVICE_ROOM = (id: string) => `device:${id}`;
 
@@ -314,11 +317,109 @@ export async function conversationRoutes(app: FastifyInstance) {
     { preHandler: [requireAuth] },
     async (req, reply) => {
       const userId = req.session!.sub;
+      const conversationId = req.params.id;
+      if (!(await isConversationMember(userId, conversationId))) {
+        return reply.code(403).send({ error: "not_a_member" });
+      }
+      const { lastReadAt } = await markConversationRead(userId, conversationId);
+
+      // Fase 18: notificar a todos los miembros que este usuario leyó la conversación.
+      // Los clientes usan este evento para actualizar los indicadores ✓✓.
+      const members = await getConversationMembers(conversationId);
+      for (const m of members) {
+        app.io?.to(`user:${m.userId}`).emit("message:read", {
+          conversationId,
+          userId,
+          lastReadAt: lastReadAt.toISOString(),
+        });
+      }
+
+      return reply.code(204).send();
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // Fase 17: Mensajes guardados (starred messages)
+  // --------------------------------------------------------------------------
+
+  // POST /conversations/:id/messages/:msgId/star — guardar mensaje
+  app.post<{ Params: { id: string; msgId: string } }>(
+    "/conversations/:id/messages/:msgId/star",
+    { preHandler: [requireAuth] },
+    async (req, reply) => {
+      const userId = req.session!.sub;
       if (!(await isConversationMember(userId, req.params.id))) {
         return reply.code(403).send({ error: "not_a_member" });
       }
-      await markConversationRead(userId, req.params.id);
+      await pool.query(
+        `INSERT INTO starred_messages (user_id, message_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [userId, req.params.msgId],
+      );
       return reply.code(204).send();
+    },
+  );
+
+  // DELETE /conversations/:id/messages/:msgId/star — quitar de guardados
+  app.delete<{ Params: { id: string; msgId: string } }>(
+    "/conversations/:id/messages/:msgId/star",
+    { preHandler: [requireAuth] },
+    async (req, reply) => {
+      const userId = req.session!.sub;
+      await pool.query(
+        "DELETE FROM starred_messages WHERE user_id = $1 AND message_id = $2",
+        [userId, req.params.msgId],
+      );
+      return reply.code(204).send();
+    },
+  );
+
+  // GET /starred-messages — lista de mensajes guardados del usuario (cross-conversation)
+  app.get(
+    "/starred-messages",
+    { preHandler: [requireAuth] },
+    async (req): Promise<{ messages: Array<{ messageId: string; conversationId: string; starredAt: string }> }> => {
+      const userId = req.session!.sub;
+      const r = await pool.query<{ message_id: string; conversation_id: string; created_at: Date }>(
+        `SELECT sm.message_id, m.conversation_id, sm.created_at
+           FROM starred_messages sm
+           JOIN messages m ON m.id = sm.message_id
+          WHERE sm.user_id = $1
+          ORDER BY sm.created_at DESC
+          LIMIT 200`,
+        [userId],
+      );
+      return {
+        messages: r.rows.map((row) => ({
+          messageId: row.message_id,
+          conversationId: row.conversation_id,
+          starredAt: row.created_at.toISOString(),
+        })),
+      };
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // Fase 18: Presencia — GET /users/presence?ids=uuid,uuid,...
+  // El cliente lo llama al abrir una conversación para saber quién está online.
+  // --------------------------------------------------------------------------
+  app.get(
+    "/users/presence",
+    { preHandler: [requireAuth] },
+    async (req): Promise<{ presence: Array<{ userId: string; online: boolean; lastSeenAt: string | null }> }> => {
+      const idsParam = (req.query as { ids?: string }).ids ?? "";
+      const ids = idsParam
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 100); // máx 100 por request
+
+      const presence = ids.map((userId) => ({
+        userId,
+        online: isUserOnline(userId),
+        lastSeenAt: isUserOnline(userId) ? null : getUserLastSeen(userId),
+      }));
+
+      return { presence };
     },
   );
 }

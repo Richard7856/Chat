@@ -159,6 +159,8 @@ export const ConversationMemberSchema = z.object({
   displayName: z.string(),
   role: z.enum(["member", "admin"]),
   joinedAt: z.string().datetime(),
+  /** Fase 18: cuándo leyó el usuario por última vez en esta conversación. */
+  lastReadAt: z.string().datetime().nullable(),
 });
 export type ConversationMember = z.infer<typeof ConversationMemberSchema>;
 
@@ -579,6 +581,12 @@ export interface ServerToClientEvents {
   "activity:updated": (p: { activityId: string; conversationId: string }) => void;
   /** Fase 15: algún asignado actualizó su estado en una tarea. */
   "task:updated": (p: { taskId: string; conversationId: string }) => void;
+  /** Fase 18: un usuario se conectó. */
+  "user:online": (p: { userId: string }) => void;
+  /** Fase 18: un usuario se desconectó (todas sus pestañas). */
+  "user:offline": (p: { userId: string; lastSeenAt: string }) => void;
+  /** Fase 18: un usuario leyó una conversación — actualiza read receipts. */
+  "message:read": (p: { conversationId: string; userId: string; lastReadAt: string }) => void;
   error: (p: { code: string; message?: string }) => void;
 }
 
@@ -593,8 +601,48 @@ export interface ClientToServerEvents {
       envelopes: EnvelopeInput[];
       /** Fase 14: adjunto referenciado por este mensaje (para vincular message_id). */
       attachmentId?: string;
+      /**
+       * Fase 19: IDs de usuarios mencionados con @username.
+       * Solo se usa para disparar push notifications — no se persiste en DB
+       * (el servidor nunca ve el plaintext del mensaje E2EE).
+       * El servidor verifica que todos los IDs sean miembros de la conversación.
+       */
+      mentionedUserIds?: string[];
     },
     ack?: (res: { ok: true; message: Message } | { ok: false; error: string }) => void,
   ) => void;
   "typing:set": (p: { conversationId: string; typing: boolean }) => void;
 }
+
+// ============================================================================
+// Fase 17 — Mensajes guardados
+// ============================================================================
+
+export const StarredMessageSchema = z.object({
+  messageId: z.string().uuid(),
+  conversationId: z.string().uuid(),
+  createdAt: z.string().datetime(),
+});
+export type StarredMessage = z.infer<typeof StarredMessageSchema>;
+
+// ============================================================================
+// Fase 18 — Presencia de usuarios
+// ============================================================================
+
+export const UserPresenceSchema = z.object({
+  userId: z.string().uuid(),
+  online: z.boolean(),
+  lastSeenAt: z.string().datetime().nullable(),
+});
+export type UserPresence = z.infer<typeof UserPresenceSchema>;
+
+// ============================================================================
+// Fase 19 — Push notifications
+// ============================================================================
+
+export const PushSubscribeRequestSchema = z.object({
+  endpoint: z.string().url(),
+  p256dh: z.string().min(1),
+  auth: z.string().min(1),
+});
+export type PushSubscribeRequest = z.infer<typeof PushSubscribeRequestSchema>;

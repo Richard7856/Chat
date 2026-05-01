@@ -29,6 +29,11 @@ export const config = {
   storageDir: optional("STORAGE_DIR", "/opt/euromex/storage"),
   /** Máximo tamaño por archivo subido (bytes). Default 50 MiB. */
   maxAttachmentBytes: Number(optional("MAX_ATTACHMENT_BYTES", String(50 * 1024 * 1024))),
+  /** Fase 19: Web Push VAPID. Generar con `pnpm --filter @euromex/api run generate-vapid`. */
+  vapidPublicKey: optional("VAPID_PUBLIC_KEY", ""),
+  vapidPrivateKey: optional("VAPID_PRIVATE_KEY", ""),
+  /** Email o URL del emisor para el header VAPID subject. */
+  vapidSubject: optional("VAPID_SUBJECT", "mailto:admin@euromex.com.mx"),
 } as const;
 
 export type Config = typeof config;

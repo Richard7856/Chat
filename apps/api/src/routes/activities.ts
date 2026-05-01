@@ -17,6 +17,7 @@ import {
   broadcastActivityUpdated,
   broadcastSystemMessage,
 } from "../chat/socket.js";
+import { sendPushToActivityParticipants } from "../lib/push.js";
 
 // ─── DB row shapes ──────────────────────────────────────────────────────────
 
@@ -171,6 +172,13 @@ export async function activityRoutes(app: FastifyInstance) {
     );
 
     const activity = await getActivityWithParticipants(activityId);
+
+    // Push a participantes offline (excluir al creador que ya sabe de la actividad)
+    const pushTargets = allParticipants.filter((pid) => pid !== userId);
+    if (pushTargets.length > 0) {
+      const creatorName = activity?.creatorDisplayName ?? "Alguien";
+      sendPushToActivityParticipants(app, pushTargets, title, creatorName, conversationId ?? null).catch(() => {});
+    }
     return reply.status(201).send(activity);
   });
 
