@@ -102,8 +102,9 @@ export async function taskRoutes(app: FastifyInstance) {
     }
     const { title, description, dueDate, assigneeIds, conversationId } = parsed.data;
 
+    // Nota: la firma de isConversationMember es (userId, conversationId) — orden importa.
     if (conversationId) {
-      const isMember = await isConversationMember(conversationId, userId);
+      const isMember = await isConversationMember(userId, conversationId);
       if (!isMember) {
         return reply.status(403).send({ error: "not_member" });
       }

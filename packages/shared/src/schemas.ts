@@ -107,6 +107,13 @@ export const LoginRequestSchema = z.object({
   totpToken: TotpTokenSchema,
   deviceName: z.string().min(1).max(64),
   platform: DevicePlatformSchema,
+  /**
+   * Si el cliente ya enrolló este browser antes, manda el deviceId guardado
+   * en el `deviceHint` para que el server reuse la fila existente y no se
+   * acumulen devices zombie cuando el usuario re-loguea full (post-localStorage clear,
+   * cookies expiradas, etc).
+   */
+  deviceId: z.string().uuid().optional(),
 });
 export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 

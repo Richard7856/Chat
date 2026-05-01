@@ -140,6 +140,9 @@ export default function ChatPage() {
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Fix post-Fase 20: ref al compositor para re-enfocarlo después de send.
+  // Sin esto, el toggle de `disabled` durante onSend hace que React pierda el foco.
+  const composerRef = useRef<HTMLInputElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const deviceKeysRef = useRef<DeviceKeyMap>({});
 
@@ -601,6 +604,9 @@ export default function ChatPage() {
       setDraft(content);
     } finally {
       setSending(false);
+      // Re-enfocar el input después del re-render que dispara setSending(false).
+      // requestAnimationFrame asegura que React ya pintó el `disabled=false`.
+      requestAnimationFrame(() => composerRef.current?.focus());
     }
   }
 
@@ -1148,6 +1154,7 @@ export default function ChatPage() {
                     );
                   })()}
                   <Input
+                    ref={composerRef}
                     value={draft}
                     onChange={(e) => {
                       const val = e.target.value;

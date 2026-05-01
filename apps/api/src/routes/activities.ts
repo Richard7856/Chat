@@ -106,9 +106,10 @@ export async function activityRoutes(app: FastifyInstance) {
     }
     const { title, description, scheduledAt, durationMinutes, location, participantIds, conversationId } = parsed.data;
 
-    // Verificar membresía si se indica una conversación
+    // Verificar membresía si se indica una conversación.
+    // Nota: la firma de isConversationMember es (userId, conversationId) — orden importa.
     if (conversationId) {
-      const isMember = await isConversationMember(conversationId, userId);
+      const isMember = await isConversationMember(userId, conversationId);
       if (!isMember) {
         return reply.status(403).send({ error: "not_member" });
       }

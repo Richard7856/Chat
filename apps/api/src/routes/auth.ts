@@ -260,7 +260,7 @@ export async function authRoutes(app: FastifyInstance) {
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
     }
-    const { username, password, totpToken, deviceName, platform } = parsed.data;
+    const { username, password, totpToken, deviceName, platform, deviceId: hintedDeviceId } = parsed.data;
 
     const userRes = await pool.query<{
       id: string;
@@ -298,19 +298,41 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.code(401).send({ error: "invalid_totp" });
     }
 
-    // Crea un dispositivo nuevo por login. (Re-uso de device por "device
-    // fingerprint" llega en Fase 4 junto con Signal.)
-    const deviceRes = await pool.query<{
-      id: string;
-      device_name: string;
-      platform: string;
-    }>(
-      `INSERT INTO devices (user_id, device_name, platform, user_agent, status)
-       VALUES ($1, $2, $3, $4, 'active')
-       RETURNING id, device_name, platform`,
-      [user.id, deviceName, platform, (req.headers["user-agent"] as string) ?? null],
-    );
-    const device = deviceRes.rows[0]!;
+    // Reuso de device: si el cliente mandó un deviceId del hint local Y existe
+    // Y pertenece a este usuario Y está activo → actualizamos last_seen_at y lo
+    // re-usamos. Esto evita acumular devices zombie cuando el usuario hace
+    // logout/login en el mismo browser.
+    let device: { id: string; device_name: string; platform: string } | null = null;
+
+    if (hintedDeviceId) {
+      const reuseRes = await pool.query<{
+        id: string;
+        device_name: string;
+        platform: string;
+      }>(
+        `UPDATE devices
+            SET last_seen_at = now(),
+                user_agent = COALESCE($3, user_agent)
+          WHERE id = $1 AND user_id = $2 AND status = 'active'
+          RETURNING id, device_name, platform`,
+        [hintedDeviceId, user.id, (req.headers["user-agent"] as string) ?? null],
+      );
+      device = reuseRes.rows[0] ?? null;
+    }
+
+    if (!device) {
+      const deviceRes = await pool.query<{
+        id: string;
+        device_name: string;
+        platform: string;
+      }>(
+        `INSERT INTO devices (user_id, device_name, platform, user_agent, status, last_seen_at)
+         VALUES ($1, $2, $3, $4, 'active', now())
+         RETURNING id, device_name, platform`,
+        [user.id, deviceName, platform, (req.headers["user-agent"] as string) ?? null],
+      );
+      device = deviceRes.rows[0]!;
+    }
 
     await audit(req, {
       userId: user.id,

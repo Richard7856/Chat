@@ -116,8 +116,19 @@ export default function LoginPage() {
     setError(null);
     setSubmitting(true);
     try {
+      // Si todavía existe un deviceHint local (ej. usuario cerró sesión pero
+      // el browser sigue siendo el mismo), pasamos el deviceId para que el
+      // server reuse esa fila en vez de crear un device nuevo cada vez.
+      const existingHint = loadDeviceHint();
       const res = await api<AuthSuccess>("/auth/login", {
-        body: { username, password, totpToken, deviceName, platform: "web" },
+        body: {
+          username,
+          password,
+          totpToken,
+          deviceName,
+          platform: "web",
+          ...(existingHint?.deviceId ? { deviceId: existingHint.deviceId } : {}),
+        },
       });
       saveSession(res);
       await ensureDeviceKeypair(res.device.id);

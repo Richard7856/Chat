@@ -12,7 +12,8 @@
     "test": "echo \"(tests pendientes)\"",
     "create-admin": "tsx src/scripts/create-admin.ts",
     "reset-password": "tsx src/scripts/reset-password.ts",
-    "generate-vapid": "tsx src/scripts/generate-vapid.ts"
+    "generate-vapid": "tsx src/scripts/generate-vapid.ts",
+    "cleanup-devices": "tsx src/scripts/cleanup-duplicate-devices.ts"
   },
   "dependencies": {
     "@euromex/shared": "workspace:*",
