@@ -1,0 +1,20 @@
+# Capacitor genera el proyecto Android Studio aquí. Lo trackeamos PARCIALMENTE:
+# las customizaciones (plugin de seguridad, AndroidManifest tweaks, recursos)
+# se commitean; los outputs de build no.
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+android/app/release/
+android/app/debug/
+android/captures/
+android/.idea/
+android/.kotlin/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Capacitor caches
+.capacitor/
+node_modules/

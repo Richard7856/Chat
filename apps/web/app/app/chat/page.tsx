@@ -51,6 +51,7 @@ import { api, clearSession, loadSession } from "../../lib/api";
 import { ensureDeviceKeypair, clearKeypair } from "../../lib/keys";
 import { closeSocket, getSocket } from "../../lib/socket";
 import { encryptAndUpload } from "../../lib/attachments";
+import { applyShareExternallyPolicy } from "../../lib/native";
 import { Avatar } from "../../components/ui/avatar";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -298,6 +299,18 @@ export default function ChatPage() {
     api<{ messages: Array<{ messageId: string }> }>("/starred-messages", { method: "GET", auth: true })
       .then((res) => setStarredIds(new Set(res.messages.map((m) => m.messageId))))
       .catch(() => {});
+  }, [me]);
+
+  // Fase 23 — APK Capacitor: aplicar FLAG_SECURE en función del permiso
+  // can_share_externally del usuario. En la web normal este efecto es no-op
+  // (el bridge detecta que no estamos en Capacitor); en el APK Android,
+  // setea el flag a nivel OS bloqueando screenshots, screen recording y
+  // mirroring. Se re-aplica al cambiar `me` (login/refresh, en futuras fases
+  // también socket events de cambio de permisos).
+  useEffect(() => {
+    if (!me) return;
+    const canShare = me.user.permissions?.canShareExternally ?? false;
+    void applyShareExternallyPolicy(canShare);
   }, [me]);
 
   // Fase 19: revisar estado actual del permiso de notificaciones

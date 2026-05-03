@@ -1,0 +1,24 @@
+{
+  "name": "@euromex/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Wrapper Capacitor de Euromex Chat para Android (y eventualmente iOS).",
+  "scripts": {
+    "cap:init": "cap init Euromex com.euromex.chat --web-dir public",
+    "cap:add:android": "cap add android",
+    "cap:sync": "cap sync android",
+    "cap:open:android": "cap open android",
+    "build:android": "cap sync android && cd android && ./gradlew assembleRelease",
+    "build:android:debug": "cap sync android && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/app": "^6.0.1",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/status-bar": "^6.0.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2",
+    "typescript": "^5.6.3"
+  }
+}

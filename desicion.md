@@ -1311,3 +1311,97 @@ al admin desde la web antes de invertir en el wrapper nativo.
 - Detección de screenshot en iOS (limitación de la plataforma)
 - Federación con otros servidores (fuera de scope, esto es un chat
   privado de empresa, no Matrix/XMPP)
+
+---
+
+## [2026-05-01] Fase 23a — Wrapper Capacitor para Android (scaffold + FLAG_SECURE)
+
+**Contexto.** Después de Fase 24 (permisos granulares), el web ya
+respeta `can_share_externally = false` con watermark intensa pero NO
+puede bloquear screenshots a nivel OS. Para "control total" del admin
+necesitamos un wrapper nativo. Ver entrada anterior para el reasoning
+de Capacitor sobre TWA.
+
+Esta fase implementa **el scaffolding mínimo** que conecta el flag de
+permisos (web) con FLAG_SECURE (Android nativo). Build, signing y
+distribución a Play Store quedan documentados pero no ejecutados — los
+hace el developer una sola vez con su keystore.
+
+### Archivos creados
+
+- `apps/mobile/package.json` — workspace pnpm `@euromex/mobile` con
+  deps de Capacitor 6 (core, cli, android, app, status-bar) y scripts
+  `cap:add:android`, `cap:sync`, `cap:open:android`,
+  `build:android[:debug]`.
+- `apps/mobile/capacitor.config.ts` — configuración. **Decisión clave**:
+  `server.url = "https://chat.148-230-82-52.sslip.io"` para que el APK
+  cargue la web de producción remota (no se bundle el HTML/JS). Razones:
+    - Updates de la web fluyen al APK sin rebuild
+    - Evitamos fricción de Next.js static export (que no soporta todas
+      las features de la app actual sin trabajo)
+    - Para offline / modo aerolínea no es bloqueante porque el chat
+      requiere socket en vivo igual.
+- `apps/mobile/public/index.html` — placeholder mínimo que solo se ve si
+  el server remoto no responde y el WebView fallbackea al webDir local.
+- `apps/mobile/.gitignore` — gitignore parcial: trackeamos los sources
+  de `android/` (manifest, plugins, recursos) pero no los outputs de
+  build (`build/`, `*.apk`, `*.aab`, `*.keystore`).
+- `apps/mobile/README.md` — instrucciones completas de setup:
+  pre-requisitos (JDK 17, Android Studio, SDK 34), `npx cap add android`,
+  agregar el plugin Kotlin `SecurityPlugin.kt`, registrar en
+  `MainActivity.kt`, generar iconos con `@capacitor/assets`, generar
+  keystore, configurar signing y buildear `app-release.apk` + `app-release.aab`.
+  Incluye también cómo apuntar al dev local (cleartext + IP de red
+  interna).
+- `apps/web/app/lib/native.ts` — bridge JS → Capacitor. Detecta en
+  runtime `window.Capacitor.isNativePlatform()` y, si está dentro del
+  WebView, llama al plugin `Security.setFlagSecure({ value })`. En web
+  normal todo es no-op. **Cero deps nuevas en `apps/web`** — usamos la
+  global que Capacitor inyecta, no `@capacitor/core` como import.
+- `apps/web/app/app/chat/page.tsx` — useEffect adicional que llama
+  `applyShareExternallyPolicy(me.user.permissions.canShareExternally)`
+  cuando carga el usuario. En web es no-op; en APK setea FLAG_SECURE.
+
+### Lo que el developer necesita hacer manualmente
+
+1. `cd apps/mobile && pnpm cap:add:android` — genera el proyecto Android
+   Studio (carpeta `android/` con boilerplate Gradle). Una sola vez.
+2. Crear `SecurityPlugin.kt` en `android/app/src/main/java/com/euromex/chat/security/`
+   con el código del README.
+3. Editar `MainActivity.kt` para registrar el plugin con
+   `registerPlugin(SecurityPlugin::class.java)`.
+4. `pnpm cap:sync` — Capacitor copia los cambios al proyecto Android.
+5. Generar keystore (una sola vez), configurar `signingConfigs` en
+   `app/build.gradle`, exportar passwords como env vars y correr
+   `pnpm build:android` para `app-release.apk`.
+6. Distribuir el APK por sideload (link en intranet) o subir a Play
+   Store internal track.
+
+### Limitaciones conocidas (Fase 23b/c)
+
+- **Push notifications**: el APK por ahora hereda el web push del WebView.
+  Funciona pero no es óptimo en background; agregar FCM nativo en una
+  fase siguiente.
+- **Downloads**: hereda el File API del WebView; en algunos Android
+  podría no funcionar bien. Migrar a `@capacitor/filesystem` cuando
+  haya queja real.
+- **iOS**: no implementado (sin Apple Dev account). El bridge JS está
+  listo para detectar iOS, solo falta `pnpm cap add ios` + plugin
+  Swift equivalente cuando haya licencia.
+- **Cambio en runtime de permisos**: si el admin cambia
+  `can_share_externally` mientras el usuario está activo, el flag
+  no se actualiza hasta el siguiente login (mismo issue que el resto
+  de Fase 24). Solución futura: socket event que dispare
+  `applyShareExternallyPolicy()` y refetch de `/auth/me`.
+
+### Verificación end-to-end (cuando se haga el primer build)
+
+1. Admin baja `can_share_externally = false` para usuario de prueba.
+2. Ese usuario hace logout + login en el APK Android.
+3. En el chat, intentar tomar screenshot → Android debería mostrar
+   "Captura de pantalla no permitida" o salir negro.
+4. Intentar grabar la pantalla → grabación sale negra en el área de la app.
+5. Abrir el switcher de Recents → preview del APK sale negro.
+6. Compartir pantalla por Cast / Miracast → área negra.
+7. Admin sube `can_share_externally = true` → logout/login → screenshots
+   funcionan normal.
