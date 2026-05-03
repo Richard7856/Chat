@@ -18,3 +18,6 @@ android/.kotlin/
 # Capacitor caches
 .capacitor/
 node_modules/
+
+# Build artifacts (APK/AAB) — son outputs, regenerables
+dist/

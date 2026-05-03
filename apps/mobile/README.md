@@ -60,92 +60,15 @@ nativas que vamos a editar (manifest, plugin de seguridad, recursos).
 
 ## Plugin nativo de seguridad (FLAG_SECURE)
 
-Después de `cap add android`, agrega el plugin Kotlin que el bridge JS
-(`apps/web/app/lib/native.ts`) consume.
+El plugin nativo Java + el registro en MainActivity ya están commiteados:
 
-### 1. Crear el archivo `SecurityPlugin.kt`
+- `android/app/src/main/java/com/euromex/chat/security/SecurityPlugin.java`
+- `android/app/src/main/java/com/euromex/chat/MainActivity.java` (registro)
 
-Path:
-`apps/mobile/android/app/src/main/java/com/euromex/chat/security/SecurityPlugin.kt`
+Capacitor 6 genera el proyecto base en Java por default; mantenemos el plugin en
+Java también para evitar tener que agregar la toolchain de Kotlin a Gradle.
 
-Contenido completo:
-
-```kotlin
-package com.euromex.chat.security
-
-import android.view.WindowManager
-import com.getcapacitor.JSObject
-import com.getcapacitor.Plugin
-import com.getcapacitor.PluginCall
-import com.getcapacitor.PluginMethod
-import com.getcapacitor.annotation.CapacitorPlugin
-
-/**
- * Plugin Capacitor que controla FLAG_SECURE en el Activity principal.
- *
- * Llamado desde el JS via window.Capacitor.Plugins.Security.setFlagSecure({ value: bool })
- *
- * Cuando value=true, Android bloquea:
- *  - Screenshots (sale negro o "captura no permitida por la app")
- *  - Screen recordings
- *  - Thumbnail del task switcher (Recents)
- *  - Mirroring inalámbrico
- *
- * Las operaciones de WindowManager DEBEN correr en el UI thread.
- */
-@CapacitorPlugin(name = "Security")
-class SecurityPlugin : Plugin() {
-
-    @PluginMethod
-    fun setFlagSecure(call: PluginCall) {
-        val value = call.getBoolean("value", false) ?: false
-        val activity = activity ?: run {
-            call.reject("activity_unavailable")
-            return
-        }
-
-        activity.runOnUiThread {
-            val window = activity.window
-            if (value) {
-                window.setFlags(
-                    WindowManager.LayoutParams.FLAG_SECURE,
-                    WindowManager.LayoutParams.FLAG_SECURE,
-                )
-            } else {
-                window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-            }
-            val ret = JSObject()
-            ret.put("value", value)
-            call.resolve(ret)
-        }
-    }
-}
-```
-
-### 2. Registrar el plugin en `MainActivity.kt`
-
-Path:
-`apps/mobile/android/app/src/main/java/com/euromex/chat/MainActivity.kt`
-
-Reemplaza el contenido por:
-
-```kotlin
-package com.euromex.chat
-
-import android.os.Bundle
-import com.euromex.chat.security.SecurityPlugin
-import com.getcapacitor.BridgeActivity
-
-class MainActivity : BridgeActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        // Registra plugins ANTES de super.onCreate
-        registerPlugin(SecurityPlugin::class.java)
-        super.onCreate(savedInstanceState)
-    }
-}
-```
-
-### 3. Sync para que Capacitor copie cambios al proyecto Android
+Si haces cambios al plugin, corre:
 
 ```bash
 pnpm cap:sync
