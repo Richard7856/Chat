@@ -292,6 +292,28 @@ export const SendMessageRequestSchema = z.object({
 });
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>;
 
+/**
+ * Fase 23b — agregar envelopes a un mensaje existente (multi-device backfill).
+ *
+ * Cuando un usuario activa un nuevo dispositivo (ej. instala el APK), las
+ * conversaciones tienen mensajes ya creados que NO tienen envelope para ese
+ * device — el plaintext fue destruido al cifrar. Los devices que sí tienen
+ * el plaintext (los que enviaron originalmente) pueden re-cifrarlos para el
+ * device nuevo y publicar envelopes adicionales con este request.
+ *
+ * Server-side validations:
+ *  - El caller debe ser el SENDER original del mensaje (es el único que tiene
+ *    plaintext válido).
+ *  - Los `recipientDeviceId` deben pertenecer a algún miembro de la
+ *    conversación de ese mensaje.
+ *  - INSERT con ON CONFLICT (message_id, recipient_device) DO NOTHING — es
+ *    seguro reenviar si ya existe.
+ */
+export const AddEnvelopesRequestSchema = z.object({
+  envelopes: z.array(EnvelopeInputSchema).min(1).max(200),
+});
+export type AddEnvelopesRequest = z.infer<typeof AddEnvelopesRequestSchema>;
+
 export const PublishIdentityRequestSchema = z.object({
   identityPublicKey: Base64Schema,
 });
@@ -641,6 +663,29 @@ export interface ServerToClientEvents {
   "user:offline": (p: { userId: string; lastSeenAt: string }) => void;
   /** Fase 18: un usuario leyó una conversación — actualiza read receipts. */
   "message:read": (p: { conversationId: string; userId: string; lastReadAt: string }) => void;
+  /**
+   * Fase 23b — Multi-device backfill: un dispositivo de algún miembro
+   * de mi conversación publicó su identity public key. Mis dispositivos
+   * activos lo escuchan y pueden re-cifrar mensajes históricos para él.
+   */
+  "device:identity-published": (p: {
+    userId: string;
+    deviceId: string;
+    identityPublicKey: string; // base64
+  }) => void;
+  /**
+   * Fase 23b — backfill: se agregó un envelope nuevo a un mensaje que ya
+   * existía. El cliente actualiza el mensaje en memoria y descifra.
+   */
+  "message:envelope-added": (p: {
+    messageId: string;
+    conversationId: string;
+    envelope: { ciphertext: string; nonce: string };
+    senderUserId: string;
+    senderDeviceId: string;
+    contentType: string;
+    createdAt: string;
+  }) => void;
   error: (p: { code: string; message?: string }) => void;
 }
 

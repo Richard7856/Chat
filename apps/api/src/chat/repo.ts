@@ -427,6 +427,103 @@ export async function publishDeviceIdentity(
 }
 
 /**
+ * Fase 23b — Devuelve los user_ids de TODOS los miembros de cualquier
+ * conversación en que participe el usuario dado. Se usa para fan-out del
+ * evento `device:identity-published` cuando alguien activa un nuevo
+ * dispositivo: solo notificamos a peers que comparten conversación.
+ */
+export async function getRelatedUserIds(userId: string): Promise<string[]> {
+  const r = await pool.query<{ user_id: string }>(
+    `SELECT DISTINCT cm2.user_id
+       FROM conversation_members cm1
+       JOIN conversation_members cm2 ON cm1.conversation_id = cm2.conversation_id
+      WHERE cm1.user_id = $1`,
+    [userId],
+  );
+  return r.rows.map((row) => row.user_id);
+}
+
+/**
+ * Fase 23b — Agrega envelopes adicionales a un mensaje existente.
+ * Idempotente: ON CONFLICT (message_id, recipient_device) DO NOTHING.
+ *
+ * Devuelve la lista de devices a los que SÍ se les insertó (excluye los
+ * que ya tenían envelope). Útil para emitir socket events solo a quienes
+ * realmente recibieron algo nuevo.
+ */
+export async function addMessageEnvelopes(
+  messageId: string,
+  envelopes: IncomingEnvelope[],
+): Promise<string[]> {
+  if (envelopes.length === 0) return [];
+
+  const recipientIds = envelopes.map((e) => e.recipientDeviceId);
+  const ciphertexts = envelopes.map((e) => e.ciphertext);
+  const nonces = envelopes.map((e) => e.nonce);
+
+  const r = await pool.query<{ recipient_device: string }>(
+    `INSERT INTO message_envelopes (message_id, recipient_device, ciphertext, nonce)
+     SELECT $1, UNNEST($2::uuid[]), UNNEST($3::bytea[]), UNNEST($4::bytea[])
+     ON CONFLICT (message_id, recipient_device) DO NOTHING
+     RETURNING recipient_device`,
+    [messageId, recipientIds, ciphertexts, nonces],
+  );
+  return r.rows.map((row) => row.recipient_device);
+}
+
+/**
+ * Fase 23b — Devuelve los datos básicos de un mensaje para validar permiso
+ * de backfill. Solo el sender original puede agregar envelopes.
+ */
+export async function getMessageMeta(
+  messageId: string,
+): Promise<{
+  conversationId: string;
+  senderUserId: string;
+  senderDeviceId: string;
+  contentType: string;
+  createdAt: Date;
+} | null> {
+  const r = await pool.query<{
+    conversation_id: string;
+    sender_user_id: string;
+    sender_device_id: string;
+    content_type: string;
+    created_at: Date;
+  }>(
+    `SELECT conversation_id, sender_user_id, sender_device_id,
+            content_type, created_at
+       FROM messages WHERE id = $1`,
+    [messageId],
+  );
+  const row = r.rows[0];
+  if (!row) return null;
+  return {
+    conversationId: row.conversation_id,
+    senderUserId: row.sender_user_id,
+    senderDeviceId: row.sender_device_id,
+    contentType: row.content_type,
+    createdAt: row.created_at,
+  };
+}
+
+/** Fase 23b — Verifica que un device ID pertenezca a algún miembro activo
+ *  de la conversación dada (necesario para validar el destinatario en
+ *  `addMessageEnvelopes`). */
+export async function deviceIsInConversation(
+  deviceId: string,
+  conversationId: string,
+): Promise<boolean> {
+  const r = await pool.query(
+    `SELECT 1 FROM devices d
+       JOIN conversation_members cm ON cm.user_id = d.user_id
+      WHERE d.id = $1 AND cm.conversation_id = $2 AND d.status = 'active'`,
+    [deviceId, conversationId],
+  );
+  return (r.rowCount ?? 0) > 0;
+}
+
+/**
  * Lista mensajes y adjunta, si existe, el sobre dirigido al dispositivo del
  * caller. Los mensajes legados de Fase 3 traen `content` plano y envelope
  * null; los de Fase 4 traen content null y un envelope para el dispositivo

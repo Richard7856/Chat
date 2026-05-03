@@ -160,6 +160,19 @@ export default function ChatPage() {
   const composerRef = useRef<HTMLInputElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const deviceKeysRef = useRef<DeviceKeyMap>({});
+  // Fase 23b — ref que espeja `messages` para que el backfill pueda leer
+  // los plaintexts ya descifrados desde dentro de un socket handler sin
+  // forzar re-renders ni romper closures.
+  const messagesRef = useRef<RenderedMessage[]>([]);
+  // Fase 23b — set de deviceIds que ya hemos procesado para backfill,
+  // para no repetir trabajo si el evento llega varias veces.
+  const backfilledDevicesRef = useRef<Set<string>>(new Set());
+  // Fase 23b — ref a la función de backfill. Permite que el socket
+  // listener (declarado arriba en el archivo) llame al backfill
+  // (declarado abajo) sin depender del orden ni de las dep arrays.
+  const backfillFnRef = useRef<
+    (deviceId: string, identityPublicKey: string) => Promise<void>
+  >(async () => {});
 
   const selectedConv = useMemo(
     () => conversations.find((c) => c.id === selectedId) ?? null,
@@ -411,17 +424,81 @@ export default function ChatPage() {
       );
     };
 
+    // Fase 23b — un device de algún peer publicó su identity pública.
+    // Si es un device nuevo (no registrado en backfilledDevicesRef) y NO
+    // soy yo mismo, intentamos re-cifrar nuestros mensajes para él.
+    const onDevicePublished = (p: {
+      userId: string;
+      deviceId: string;
+      identityPublicKey: string;
+    }) => {
+      // Refrescar el cache de device keys de la conversación activa para
+      // que el próximo envío incluya este device automáticamente.
+      if (selectedIdRef.current) {
+        void refreshDeviceKeys(selectedIdRef.current);
+      }
+      // Backfill via ref (la función está declarada más abajo en el archivo).
+      void backfillFnRef.current(p.deviceId, p.identityPublicKey);
+    };
+
+    // Fase 23b — el server agregó un envelope para un mensaje que ya tenía
+    // YO en memoria (probablemente como "no_envelope"). Lo descifro y
+    // actualizo el render.
+    const onEnvelopeAdded = async (p: {
+      messageId: string;
+      conversationId: string;
+      envelope: { ciphertext: string; nonce: string };
+      senderUserId: string;
+      senderDeviceId: string;
+      contentType: string;
+      createdAt: string;
+    }) => {
+      if (!myKeypair) return;
+      // Asegurar que tenemos la clave del sender en cache
+      if (!deviceKeysRef.current[p.senderDeviceId]) {
+        try {
+          await refreshDeviceKeys(p.conversationId);
+        } catch {}
+      }
+      const fakeMsg: Message = {
+        id: p.messageId,
+        conversationId: p.conversationId,
+        senderUserId: p.senderUserId,
+        senderDeviceId: p.senderDeviceId,
+        content: null,
+        contentType: p.contentType,
+        envelope: p.envelope,
+        createdAt: p.createdAt,
+      };
+      const rendered = await decryptMessage(fakeMsg, myKeypair);
+      setMessages((prev) => {
+        // Si el mensaje ya estaba en la lista, REEMPLAZAR (cambiamos
+        // status no_envelope → ok). Si no estaba (otra conversación o
+        // fuera del rango cargado), no hacemos nada — lo veremos al
+        // re-cargar la conversación.
+        const idx = prev.findIndex((m) => m.id === p.messageId);
+        if (idx < 0) return prev;
+        const next = [...prev];
+        next[idx] = rendered;
+        return next;
+      });
+    };
+
     socket.on("message:new", onNew);
     socket.on("conversation:updated", onConvUpdated);
     socket.on("user:online", onUserOnline);
     socket.on("user:offline", onUserOffline);
     socket.on("message:read", onMessageRead);
+    socket.on("device:identity-published", onDevicePublished);
+    socket.on("message:envelope-added", onEnvelopeAdded);
     return () => {
       socket.off("message:new", onNew);
       socket.off("conversation:updated", onConvUpdated);
       socket.off("user:online", onUserOnline);
       socket.off("user:offline", onUserOffline);
       socket.off("message:read", onMessageRead);
+      socket.off("device:identity-published", onDevicePublished);
+      socket.off("message:envelope-added", onEnvelopeAdded);
     };
   }, [me, myKeypair, decryptMessage, refreshDeviceKeys]);
 
@@ -429,33 +506,143 @@ export default function ChatPage() {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
+  // Fase 23b — mantener messagesRef sincronizado para que el backfill async
+  // pueda leer el estado actual sin pasar por React state.
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  /**
+   * Fase 23b — Multi-device backfill.
+   *
+   * Cuando un device nuevo aparece en alguna conversación (porque se acaba de
+   * publicar su identity public key), nosotros — como otro device del mismo
+   * o de otro miembro — re-ciframos los mensajes que NOSOTROS enviamos para
+   * este device, y los publicamos vía POST /messages/:id/envelopes.
+   *
+   * Solo podemos backfillear mensajes:
+   *  - Que YO envié (status === "ok" Y senderUserId === me.user.id)
+   *  - Que tienen plaintext en memoria
+   *  - Cuyo contentType es E2EE (text/plain o attachment json) — los
+   *    system/activity/task messages NO son E2EE.
+   *
+   * Es no-op para nuestro propio device (newDeviceId === me.device.id).
+   * Idempotente del lado del servidor (ON CONFLICT DO NOTHING).
+   */
+  const backfillEnvelopesForDevice = useCallback(
+    async (newDeviceId: string, identityPublicKey: string): Promise<void> => {
+      if (!me || !myKeypair) return;
+      if (newDeviceId === me.device.id) return;
+      if (backfilledDevicesRef.current.has(newDeviceId)) return;
+      backfilledDevicesRef.current.add(newDeviceId);
+
+      let peerPub: Uint8Array;
+      try {
+        peerPub = await fromBase64(identityPublicKey);
+      } catch {
+        return;
+      }
+
+      const candidates = messagesRef.current.filter((m) => {
+        if (m.senderUserId !== me.user.id) return false;
+        if (m.status !== "ok") return false;
+        if (!m.plaintext) return false;
+        // Skip non-E2EE content types
+        if (
+          m.contentType === SYSTEM_CONTENT_TYPE ||
+          m.contentType === ACTIVITY_CONTENT_TYPE ||
+          m.contentType === TASK_CONTENT_TYPE
+        ) return false;
+        return true;
+      });
+
+      if (candidates.length === 0) return;
+
+      // Procesa de a 25 mensajes por batch para no inundar la red.
+      const BATCH = 25;
+      for (let i = 0; i < candidates.length; i += BATCH) {
+        const slice = candidates.slice(i, i + BATCH);
+        await Promise.all(
+          slice.map(async (msg) => {
+            try {
+              const ptBytes = await encodeUtf8(msg.plaintext!);
+              const env = await encryptFor(ptBytes, peerPub, myKeypair.privateKey);
+              await api(`/messages/${msg.id}/envelopes`, {
+                method: "POST",
+                auth: true,
+                body: {
+                  envelopes: [
+                    {
+                      recipientDeviceId: newDeviceId,
+                      ciphertext: await toBase64(env.ciphertext),
+                      nonce: await toBase64(env.nonce),
+                    },
+                  ],
+                },
+              });
+            } catch (err) {
+              // No es crítico: si un mensaje falla, los demás sí progresan.
+              // eslint-disable-next-line no-console
+              console.warn("[backfill] failed for", msg.id, err);
+            }
+          }),
+        );
+      }
+    },
+    [me, myKeypair],
+  );
+
+  // Mantener el ref siempre apuntando a la última versión de la función.
+  useEffect(() => {
+    backfillFnRef.current = backfillEnvelopesForDevice;
+  }, [backfillEnvelopesForDevice]);
+
   // ---------------- Carga mensajes al cambiar conv ----------------
   useEffect(() => {
     if (!selectedId || !myKeypair) {
       setMessages([]);
       return;
     }
+    const convId = selectedId;
     (async () => {
-      await refreshDeviceKeys(selectedId);
+      await refreshDeviceKeys(convId);
       const r = await api<{ messages: Message[] }>(
-        `/conversations/${selectedId}/messages?limit=50`,
+        `/conversations/${convId}/messages?limit=50`,
         { method: "GET", auth: true },
       );
       const rendered = await Promise.all(
         r.messages.map((m) => decryptMessage(m, myKeypair)),
       );
       setMessages(rendered);
+      // Sincronizar el ref ANTES de disparar backfill — el backfill lee
+      // messagesRef.current y queremos que ya tenga los mensajes recién
+      // descargados.
+      messagesRef.current = rendered;
+
       try {
-        await api(`/conversations/${selectedId}/read`, {
+        await api(`/conversations/${convId}/read`, {
           method: "POST",
           auth: true,
         });
       } catch {}
       setConversations((prev) =>
-        prev.map((c) => (c.id === selectedId ? { ...c, unreadCount: 0 } : c)),
+        prev.map((c) => (c.id === convId ? { ...c, unreadCount: 0 } : c)),
       );
+
+      // Fase 23b — backfill al cambiar de conversación: si la conversación
+      // tiene devices con identity publicada que no hemos backfilleado,
+      // procesar ahora. Esto cubre el caso "el usuario abre una conv vieja
+      // donde el peer agregó un device hace tiempo".
+      const allDevices = Object.values(deviceKeysRef.current);
+      for (const d of allDevices) {
+        if (!d.identityPublicKey) continue;
+        if (d.deviceId === me?.device.id) continue;
+        if (backfilledDevicesRef.current.has(d.deviceId)) continue;
+        // No await — corren en background, no bloquear el render.
+        void backfillFnRef.current(d.deviceId, d.identityPublicKey);
+      }
     })();
-  }, [selectedId, myKeypair, refreshDeviceKeys, decryptMessage]);
+  }, [selectedId, myKeypair, refreshDeviceKeys, decryptMessage, me]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({

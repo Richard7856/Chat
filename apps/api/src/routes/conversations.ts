@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { Server as SocketIOServer } from "socket.io";
 import {
+  AddEnvelopesRequestSchema,
   CreateConversationRequestSchema,
   PublishIdentityRequestSchema,
   SendMessageRequestSchema,
@@ -16,12 +17,16 @@ import {
 import { requireAuth } from "../auth/jwt.js";
 import { getUserPermissions } from "../auth/permissions.js";
 import {
+  addMessageEnvelopes,
   createConversation,
+  deviceIsInConversation,
   findDmBetween,
   getAlertWatchersInConversation,
   getConversationDeviceKeys,
   getConversationForUser,
   getConversationMembers,
+  getMessageMeta,
+  getRelatedUserIds,
   insertEncryptedMessage,
   insertSystemMessage,
   isConversationMember,
@@ -64,6 +69,104 @@ export async function conversationRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "invalid_key_length" });
       }
       await publishDeviceIdentity(req.session!.did, keyBuf);
+
+      // Fase 23b — Multi-device backfill: notificar a todos los peers que
+      // comparten conversación con este usuario que existe un device nuevo
+      // con identity pública lista. Sus clientes pueden re-cifrar mensajes
+      // históricos para este device (solo los que ellos mismos enviaron, ya
+      // que solo el sender tiene plaintext).
+      const peers = await getRelatedUserIds(req.session!.sub);
+      const event = {
+        userId: req.session!.sub,
+        deviceId: req.session!.did,
+        identityPublicKey: parsed.data.identityPublicKey,
+      };
+      for (const peerUserId of peers) {
+        app.io?.to(`user:${peerUserId}`).emit("device:identity-published", event);
+      }
+
+      return reply.code(204).send();
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // Fase 23b — Agregar envelopes a un mensaje existente (multi-device backfill).
+  //
+  // Solo el SENDER original del mensaje puede agregar envelopes — es el único
+  // device que tiene el plaintext válido. Idempotente vía ON CONFLICT en BD.
+  // --------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    "/messages/:id/envelopes",
+    { preHandler: [requireAuth] },
+    async (req, reply) => {
+      const parsed = AddEnvelopesRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
+      }
+      const userId = req.session!.sub;
+      const messageId = req.params.id;
+
+      const meta = await getMessageMeta(messageId);
+      if (!meta) {
+        return reply.code(404).send({ error: "message_not_found" });
+      }
+      if (meta.senderUserId !== userId) {
+        // Solo el sender puede backfill — solo él tiene plaintext.
+        return reply.code(403).send({ error: "not_sender" });
+      }
+
+      // Validar que cada recipientDeviceId pertenezca a un miembro de la
+      // conversación. Hacemos las validaciones en paralelo y descartamos
+      // los inválidos silenciosamente (mejor que rechazar todo el batch
+      // por uno malo).
+      const validatedEnvelopes: Array<{
+        recipientDeviceId: string;
+        ciphertext: Buffer;
+        nonce: Buffer;
+      }> = [];
+      await Promise.all(
+        parsed.data.envelopes.map(async (e) => {
+          const ok = await deviceIsInConversation(
+            e.recipientDeviceId,
+            meta.conversationId,
+          );
+          if (!ok) return;
+          try {
+            validatedEnvelopes.push({
+              recipientDeviceId: e.recipientDeviceId,
+              ciphertext: Buffer.from(e.ciphertext, "base64"),
+              nonce: Buffer.from(e.nonce, "base64"),
+            });
+          } catch {
+            /* base64 invalido — saltar */
+          }
+        }),
+      );
+
+      if (validatedEnvelopes.length === 0) {
+        return reply.code(400).send({ error: "no_valid_envelopes" });
+      }
+
+      const inserted = await addMessageEnvelopes(messageId, validatedEnvelopes);
+
+      // Notificar a cada device que recibió un envelope NUEVO (no a los que
+      // ya tenían — ON CONFLICT DO NOTHING los excluyó).
+      for (const env of validatedEnvelopes) {
+        if (!inserted.includes(env.recipientDeviceId)) continue;
+        app.io?.to(DEVICE_ROOM(env.recipientDeviceId)).emit("message:envelope-added", {
+          messageId,
+          conversationId: meta.conversationId,
+          envelope: {
+            ciphertext: env.ciphertext.toString("base64"),
+            nonce: env.nonce.toString("base64"),
+          },
+          senderUserId: meta.senderUserId,
+          senderDeviceId: meta.senderDeviceId,
+          contentType: meta.contentType,
+          createdAt: meta.createdAt.toISOString(),
+        });
+      }
+
       return reply.code(204).send();
     },
   );
