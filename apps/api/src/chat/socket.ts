@@ -266,6 +266,11 @@ export function registerSocketIO(app: FastifyInstance): IOServer {
                   nonce: ownEnv.nonce.toString("base64"),
                 }
               : null,
+            // Fase 25: defaults para mensajes nuevos.
+            editedAt: null,
+            editCount: 0,
+            deletedAt: null,
+            deletedByUserId: null,
           },
         });
       } catch (err) {
@@ -312,6 +317,11 @@ function fanOutMessage(
     content: null,
     contentType: params.contentType,
     createdAt: params.createdAt.toISOString(),
+    // Fase 25: defaults para mensajes nuevos.
+    editedAt: null,
+    editCount: 0,
+    deletedAt: null,
+    deletedByUserId: null,
   };
 
   for (const env of params.envelopes) {
@@ -358,6 +368,11 @@ export function broadcastSystemMessage(
     contentType: params.contentType,
     createdAt: params.createdAt.toISOString(),
     envelope: null,
+    // Fase 25: defaults; los system messages no se editan ni borran.
+    editedAt: null,
+    editCount: 0,
+    deletedAt: null,
+    deletedByUserId: null,
   };
   for (const userId of params.watcherUserIds) {
     app.io?.to(USER_ROOM(userId)).emit("message:new", msg);

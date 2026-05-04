@@ -524,6 +524,170 @@ export async function deviceIsInConversation(
 }
 
 /**
+ * Fase 25 — edita un mensaje existente.
+ *
+ * Flujo transaccional:
+ *  1) Lee el mensaje + valida autoría, estado (no borrado) y ventana
+ *     temporal (max 24h por default).
+ *  2) Mueve los envelopes actuales a `message_envelopes_history` con la
+ *     versión actual (edit_count + 1, siendo 1 la primera versión).
+ *  3) Borra los envelopes actuales y los reemplaza por los nuevos.
+ *  4) Actualiza messages.edited_at + edit_count++.
+ *
+ * Devuelve `null` si la validación falla; el caller decide qué error HTTP
+ * mandar.
+ */
+export type EditMessageError =
+  | "not_found"
+  | "not_sender"
+  | "already_deleted"
+  | "edit_window_expired";
+
+const EDIT_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
+
+export async function editMessage(params: {
+  messageId: string;
+  callerUserId: string;
+  envelopes: IncomingEnvelope[];
+}): Promise<
+  | { ok: true; editedAt: Date; editCount: number; envelopes: IncomingEnvelope[] }
+  | { ok: false; error: EditMessageError }
+> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const r = await client.query<{
+      sender_user_id: string;
+      conversation_id: string;
+      created_at: Date;
+      deleted_at: Date | null;
+      edit_count: number;
+    }>(
+      `SELECT sender_user_id, conversation_id, created_at, deleted_at, edit_count
+         FROM messages WHERE id = $1 FOR UPDATE`,
+      [params.messageId],
+    );
+    const row = r.rows[0];
+    if (!row) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "not_found" };
+    }
+    if (row.sender_user_id !== params.callerUserId) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "not_sender" };
+    }
+    if (row.deleted_at !== null) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "already_deleted" };
+    }
+    if (Date.now() - row.created_at.getTime() > EDIT_WINDOW_MS) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "edit_window_expired" };
+    }
+
+    // Archivar envelopes actuales con version_number = edit_count + 1 (1 es
+    // la versión original, antes del primer edit).
+    const archiveVersion = row.edit_count + 1;
+    await client.query(
+      `INSERT INTO message_envelopes_history
+         (message_id, version_number, recipient_device, ciphertext, nonce)
+       SELECT message_id, $2, recipient_device, ciphertext, nonce
+         FROM message_envelopes WHERE message_id = $1`,
+      [params.messageId, archiveVersion],
+    );
+
+    // Eliminar envelopes actuales y reinsertar los nuevos
+    await client.query(
+      "DELETE FROM message_envelopes WHERE message_id = $1",
+      [params.messageId],
+    );
+    for (const env of params.envelopes) {
+      await client.query(
+        `INSERT INTO message_envelopes (message_id, recipient_device, ciphertext, nonce)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT DO NOTHING`,
+        [params.messageId, env.recipientDeviceId, env.ciphertext, env.nonce],
+      );
+    }
+
+    const upd = await client.query<{ edited_at: Date; edit_count: number }>(
+      `UPDATE messages
+          SET edited_at = now(),
+              edit_count = edit_count + 1
+        WHERE id = $1
+        RETURNING edited_at, edit_count`,
+      [params.messageId],
+    );
+
+    await client.query(
+      "UPDATE conversations SET updated_at = now() WHERE id = $1",
+      [row.conversation_id],
+    );
+
+    await client.query("COMMIT");
+    return {
+      ok: true,
+      editedAt: upd.rows[0]!.edited_at,
+      editCount: upd.rows[0]!.edit_count,
+      envelopes: params.envelopes,
+    };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Fase 25 — soft delete de un mensaje. Mantiene los envelopes intactos
+ * para auditoría; solo marca `deleted_at` y `deleted_by`. El cliente debe
+ * dejar de mostrar el contenido (tombstone).
+ */
+export type DeleteMessageError = "not_found" | "not_sender" | "already_deleted";
+
+export async function deleteMessage(params: {
+  messageId: string;
+  callerUserId: string;
+}): Promise<
+  | { ok: true; conversationId: string; deletedAt: Date }
+  | { ok: false; error: DeleteMessageError }
+> {
+  const r = await pool.query<{
+    sender_user_id: string;
+    conversation_id: string;
+    deleted_at: Date | null;
+  }>(
+    "SELECT sender_user_id, conversation_id, deleted_at FROM messages WHERE id = $1",
+    [params.messageId],
+  );
+  const row = r.rows[0];
+  if (!row) return { ok: false, error: "not_found" };
+  if (row.sender_user_id !== params.callerUserId) {
+    return { ok: false, error: "not_sender" };
+  }
+  if (row.deleted_at !== null) {
+    return { ok: false, error: "already_deleted" };
+  }
+
+  const upd = await pool.query<{ deleted_at: Date }>(
+    `UPDATE messages
+        SET deleted_at = now(),
+            deleted_by = $2
+      WHERE id = $1
+      RETURNING deleted_at`,
+    [params.messageId, params.callerUserId],
+  );
+
+  return {
+    ok: true,
+    conversationId: row.conversation_id,
+    deletedAt: upd.rows[0]!.deleted_at,
+  };
+}
+
+/**
  * Lista mensajes y adjunta, si existe, el sobre dirigido al dispositivo del
  * caller. Los mensajes legados de Fase 3 traen `content` plano y envelope
  * null; los de Fase 4 traen content null y un envelope para el dispositivo
@@ -557,11 +721,16 @@ export async function listMessages(params: {
     content: string | null;
     content_type: string;
     created_at: Date;
+    edited_at: Date | null;
+    edit_count: number;
+    deleted_at: Date | null;
+    deleted_by: string | null;
     ciphertext: Buffer | null;
     nonce: Buffer | null;
   }>(
     `SELECT m.id, m.conversation_id, m.sender_user_id, m.sender_device_id,
             m.content, m.content_type, m.created_at,
+            m.edited_at, m.edit_count, m.deleted_at, m.deleted_by,
             e.ciphertext, e.nonce
        FROM messages m
        LEFT JOIN message_envelopes e
@@ -589,6 +758,10 @@ export async function listMessages(params: {
               nonce: row.nonce.toString("base64"),
             }
           : null,
+      editedAt: row.edited_at ? row.edited_at.toISOString() : null,
+      editCount: row.edit_count,
+      deletedAt: row.deleted_at ? row.deleted_at.toISOString() : null,
+      deletedByUserId: row.deleted_by,
     }))
     .reverse();
 }

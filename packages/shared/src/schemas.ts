@@ -276,6 +276,15 @@ export const MessageSchema = z.object({
   envelope: z
     .object({ ciphertext: Base64Schema, nonce: Base64Schema })
     .nullable(),
+  /** Fase 25: si el mensaje fue editado, ISO de la última edición. */
+  editedAt: z.string().datetime().nullable().default(null),
+  /** Fase 25: número de ediciones; permite mostrar "(editado)" sin tooltip. */
+  editCount: z.number().int().nonnegative().default(0),
+  /** Fase 25: si el mensaje fue borrado (soft delete), ISO del borrado. */
+  deletedAt: z.string().datetime().nullable().default(null),
+  /** Fase 25: usuario que ejecutó el borrado. Útil para tombstones tipo
+   *  "Borrado por <X>" cuando el sender no es el que borra (futuro: admins). */
+  deletedByUserId: z.string().uuid().nullable().default(null),
 });
 export type Message = z.infer<typeof MessageSchema>;
 
@@ -291,6 +300,24 @@ export const SendMessageRequestSchema = z.object({
   attachmentId: z.string().uuid().optional(),
 });
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>;
+
+/**
+ * Fase 25 — editar un mensaje existente. El cliente re-cifra el contenido
+ * para TODOS los devices destinatarios actuales y manda el nuevo set de
+ * envelopes. El server archiva los envelopes anteriores en
+ * `message_envelopes_history` antes de reemplazarlos.
+ *
+ * Reglas server-side:
+ *  - Solo el sender original puede editar.
+ *  - Solo dentro de 24h después del envío original (configurable).
+ *  - El message no puede estar borrado (deleted_at IS NULL).
+ *  - El contentType DEBE coincidir con el original (no se permite convertir
+ *    un text/plain en un attachment).
+ */
+export const EditMessageRequestSchema = z.object({
+  envelopes: z.array(EnvelopeInputSchema).min(1).max(200),
+});
+export type EditMessageRequest = z.infer<typeof EditMessageRequestSchema>;
 
 /**
  * Fase 23b — agregar envelopes a un mensaje existente (multi-device backfill).
@@ -685,6 +712,29 @@ export interface ServerToClientEvents {
     senderDeviceId: string;
     contentType: string;
     createdAt: string;
+  }) => void;
+  /**
+   * Fase 25 — el mensaje fue editado. El payload incluye el envelope
+   * dirigido al device del receptor (ya re-cifrado con el nuevo plaintext);
+   * el cliente actualiza el bubble in-place y muestra "(editado)".
+   */
+  "message:edited": (p: {
+    messageId: string;
+    conversationId: string;
+    envelope: { ciphertext: string; nonce: string } | null;
+    editCount: number;
+    editedAt: string;
+  }) => void;
+  /**
+   * Fase 25 — el mensaje fue borrado (soft delete). Los envelopes siguen
+   * existiendo en BD para auditoría, pero el cliente debe dejar de
+   * mostrarlo y poner un tombstone.
+   */
+  "message:deleted": (p: {
+    messageId: string;
+    conversationId: string;
+    deletedAt: string;
+    deletedByUserId: string;
   }) => void;
   error: (p: { code: string; message?: string }) => void;
 }

@@ -134,8 +134,18 @@ CREATE TABLE IF NOT EXISTS messages (
   sender_device_id UUID NOT NULL REFERENCES devices(id) ON DELETE RESTRICT,
   content         TEXT,
   content_type    TEXT NOT NULL DEFAULT 'text/plain',
+  -- Fase 25: editar/borrar mensajes con auditoría preservada.
+  edited_at       TIMESTAMPTZ,
+  edit_count      INT NOT NULL DEFAULT 0,
+  deleted_at      TIMESTAMPTZ,
+  deleted_by      UUID REFERENCES users(id) ON DELETE SET NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Índice parcial para listar mensajes borrados (admin audit).
+CREATE INDEX IF NOT EXISTS idx_messages_deleted
+  ON messages(conversation_id, deleted_at)
+  WHERE deleted_at IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_messages_conv_created
   ON messages(conversation_id, created_at DESC);
@@ -154,6 +164,23 @@ CREATE TABLE IF NOT EXISTS message_envelopes (
 CREATE INDEX IF NOT EXISTS idx_envelopes_pending
   ON message_envelopes(recipient_device)
   WHERE delivered_at IS NULL;
+
+-- Fase 25: histórico de envelopes para auditoría tras editar mensajes.
+-- Al editar un mensaje, sus envelopes actuales se mueven aquí antes de
+-- insertar los nuevos. version_number == edit_count del mensaje cuando
+-- se archivó (1 = primera versión / pre-primer-edit).
+CREATE TABLE IF NOT EXISTS message_envelopes_history (
+  message_id       UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  version_number   INT  NOT NULL CHECK (version_number >= 1),
+  recipient_device UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  ciphertext       BYTEA NOT NULL,
+  nonce            BYTEA,
+  archived_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (message_id, version_number, recipient_device)
+);
+
+CREATE INDEX IF NOT EXISTS idx_envelopes_history_message
+  ON message_envelopes_history(message_id, version_number);
 
 -- ============================================================================
 -- Adjuntos (Fase 5).

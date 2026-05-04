@@ -3,6 +3,7 @@ import { Server as SocketIOServer } from "socket.io";
 import {
   AddEnvelopesRequestSchema,
   CreateConversationRequestSchema,
+  EditMessageRequestSchema,
   PublishIdentityRequestSchema,
   SendMessageRequestSchema,
   SYSTEM_CONTENT_TYPE,
@@ -19,7 +20,9 @@ import { getUserPermissions } from "../auth/permissions.js";
 import {
   addMessageEnvelopes,
   createConversation,
+  deleteMessage,
   deviceIsInConversation,
+  editMessage,
   findDmBetween,
   getAlertWatchersInConversation,
   getConversationDeviceKeys,
@@ -164,6 +167,145 @@ export async function conversationRoutes(app: FastifyInstance) {
           senderDeviceId: meta.senderDeviceId,
           contentType: meta.contentType,
           createdAt: meta.createdAt.toISOString(),
+        });
+      }
+
+      return reply.code(204).send();
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // Fase 25 — Editar un mensaje (solo el sender, dentro de 24h).
+  //
+  // El cliente cifra el nuevo plaintext para TODOS los devices destinatarios
+  // y envía el set completo de envelopes. El server archiva los envelopes
+  // anteriores en `message_envelopes_history` y reemplaza por los nuevos.
+  // Emite `message:edited` a cada device destinatario para actualización en
+  // tiempo real.
+  // --------------------------------------------------------------------------
+  app.patch<{ Params: { id: string } }>(
+    "/messages/:id",
+    { preHandler: [requireAuth] },
+    async (req, reply) => {
+      const parsed = EditMessageRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
+      }
+      const userId = req.session!.sub;
+      const messageId = req.params.id;
+
+      const meta = await getMessageMeta(messageId);
+      if (!meta) return reply.code(404).send({ error: "message_not_found" });
+
+      // Sanity: validar destinatarios (igual que en POST envelopes — evita
+      // que envelopes apunten a devices fuera de la conversación).
+      const incomingEnvelopes: Array<{
+        recipientDeviceId: string;
+        ciphertext: Buffer;
+        nonce: Buffer;
+      }> = [];
+      for (const e of parsed.data.envelopes) {
+        const ok = await deviceIsInConversation(e.recipientDeviceId, meta.conversationId);
+        if (!ok) continue;
+        try {
+          incomingEnvelopes.push({
+            recipientDeviceId: e.recipientDeviceId,
+            ciphertext: Buffer.from(e.ciphertext, "base64"),
+            nonce: Buffer.from(e.nonce, "base64"),
+          });
+        } catch {
+          /* base64 inválido — saltar */
+        }
+      }
+      if (incomingEnvelopes.length === 0) {
+        return reply.code(400).send({ error: "no_valid_envelopes" });
+      }
+
+      const res = await editMessage({
+        messageId,
+        callerUserId: userId,
+        envelopes: incomingEnvelopes,
+      });
+      if (!res.ok) {
+        const code = res.error === "not_found" ? 404 : res.error === "not_sender" ? 403 : 400;
+        return reply.code(code).send({ error: res.error });
+      }
+
+      // Audit log
+      await pool.query(
+        `INSERT INTO audit_log (user_id, device_id, action, metadata, ip, user_agent)
+         VALUES ($1, $2, 'message.edited', $3::jsonb, $4, $5)`,
+        [
+          userId,
+          req.session!.did,
+          JSON.stringify({
+            messageId,
+            conversationId: meta.conversationId,
+            editCount: res.editCount,
+          }),
+          req.ip,
+          req.headers["user-agent"] ?? null,
+        ],
+      );
+
+      // Emit socket event a cada device destinatario, con el envelope que
+      // le corresponde. (Cada device solo recibe el envelope cifrado para él.)
+      for (const env of res.envelopes) {
+        app.io?.to(DEVICE_ROOM(env.recipientDeviceId)).emit("message:edited", {
+          messageId,
+          conversationId: meta.conversationId,
+          envelope: {
+            ciphertext: env.ciphertext.toString("base64"),
+            nonce: env.nonce.toString("base64"),
+          },
+          editCount: res.editCount,
+          editedAt: res.editedAt.toISOString(),
+        });
+      }
+
+      return reply.code(204).send();
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // Fase 25 — Borrar un mensaje (soft delete; envelopes se preservan para
+  // auditoría). Solo el sender puede borrar (admins en una fase futura).
+  // Emite `message:deleted` a TODOS los miembros de la conversación.
+  // --------------------------------------------------------------------------
+  app.delete<{ Params: { id: string } }>(
+    "/messages/:id",
+    { preHandler: [requireAuth] },
+    async (req, reply) => {
+      const userId = req.session!.sub;
+      const messageId = req.params.id;
+
+      const res = await deleteMessage({ messageId, callerUserId: userId });
+      if (!res.ok) {
+        const code = res.error === "not_found" ? 404 : res.error === "not_sender" ? 403 : 400;
+        return reply.code(code).send({ error: res.error });
+      }
+
+      await pool.query(
+        `INSERT INTO audit_log (user_id, device_id, action, metadata, ip, user_agent)
+         VALUES ($1, $2, 'message.deleted', $3::jsonb, $4, $5)`,
+        [
+          userId,
+          req.session!.did,
+          JSON.stringify({ messageId, conversationId: res.conversationId }),
+          req.ip,
+          req.headers["user-agent"] ?? null,
+        ],
+      );
+
+      // Notificar a todos los miembros de la conv. El payload no incluye
+      // contenido — solo metadata (deletedAt + deletedByUserId).
+      const members = await getConversationMembers(res.conversationId);
+      for (const m of members) {
+        app.io?.to(`user:${m.userId}`).emit("message:deleted", {
+          messageId,
+          conversationId: res.conversationId,
+          deletedAt: res.deletedAt.toISOString(),
+          deletedByUserId: userId,
         });
       }
 
@@ -395,6 +537,11 @@ export async function conversationRoutes(app: FastifyInstance) {
         content: null,
         contentType: parsed.data.contentType,
         createdAt: res.createdAt.toISOString(),
+        // Fase 25: defaults para mensajes nuevos.
+        editedAt: null,
+        editCount: 0,
+        deletedAt: null,
+        deletedByUserId: null,
       };
       if (io) {
         for (const env of res.envelopes) {

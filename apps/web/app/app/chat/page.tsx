@@ -8,6 +8,7 @@ import {
   Bell,
   BellOff,
   CalendarDays,
+  Check,
   ClipboardList,
   CalendarPlus,
   FolderOpen,
@@ -15,12 +16,15 @@ import {
   Lock,
   LogOut,
   Paperclip,
+  Pencil,
   Plus,
   Search,
   Send,
   ShieldCheck,
   Sparkles,
   Star,
+  Trash2,
+  X,
 } from "lucide-react";
 import type {
   AttachmentPayload,
@@ -136,6 +140,12 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Fase 25 — edición/borrado.
+  // editingMessageId !== null: el composer está en modo "edit" y el draft
+  // representa el nuevo contenido. Al guardar se manda PATCH y se sale.
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  // confirmDeleteId !== null: hay un modal abierto preguntando si borrar.
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [showDocsPanel, setShowDocsPanel] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [showActivityModal, setShowActivityModal] = useState(false);
@@ -469,6 +479,10 @@ export default function ChatPage() {
         contentType: p.contentType,
         envelope: p.envelope,
         createdAt: p.createdAt,
+        editedAt: null,
+        editCount: 0,
+        deletedAt: null,
+        deletedByUserId: null,
       };
       const rendered = await decryptMessage(fakeMsg, myKeypair);
       setMessages((prev) => {
@@ -484,6 +498,62 @@ export default function ChatPage() {
       });
     };
 
+    // Fase 25 — el sender editó el mensaje y el server me mandó el envelope
+    // re-cifrado. Descifro y reemplazo el bubble in-place con el nuevo
+    // plaintext + indicador "(editado)".
+    const onMessageEdited = async (p: {
+      messageId: string;
+      conversationId: string;
+      envelope: { ciphertext: string; nonce: string } | null;
+      editCount: number;
+      editedAt: string;
+    }) => {
+      if (!myKeypair) return;
+      const existing = messagesRef.current.find((m) => m.id === p.messageId);
+      if (!existing) return; // mensaje no cargado, no hacemos nada
+      // Asegurar que tenemos la pubkey del sender
+      if (!deviceKeysRef.current[existing.senderDeviceId]) {
+        try {
+          await refreshDeviceKeys(p.conversationId);
+        } catch {}
+      }
+      const fakeMsg: Message = {
+        id: p.messageId,
+        conversationId: p.conversationId,
+        senderUserId: existing.senderUserId,
+        senderDeviceId: existing.senderDeviceId,
+        content: null,
+        contentType: existing.contentType,
+        envelope: p.envelope,
+        createdAt: existing.createdAt,
+        editedAt: p.editedAt,
+        editCount: p.editCount,
+        deletedAt: null,
+        deletedByUserId: null,
+      };
+      const rendered = await decryptMessage(fakeMsg, myKeypair);
+      setMessages((prev) =>
+        prev.map((m) => (m.id === p.messageId ? rendered : m)),
+      );
+    };
+
+    // Fase 25 — el sender borró el mensaje (soft delete). Marca el bubble
+    // como tombstone localmente.
+    const onMessageDeleted = (p: {
+      messageId: string;
+      conversationId: string;
+      deletedAt: string;
+      deletedByUserId: string;
+    }) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === p.messageId
+            ? { ...m, deletedAt: p.deletedAt, deletedByUserId: p.deletedByUserId }
+            : m,
+        ),
+      );
+    };
+
     socket.on("message:new", onNew);
     socket.on("conversation:updated", onConvUpdated);
     socket.on("user:online", onUserOnline);
@@ -491,6 +561,8 @@ export default function ChatPage() {
     socket.on("message:read", onMessageRead);
     socket.on("device:identity-published", onDevicePublished);
     socket.on("message:envelope-added", onEnvelopeAdded);
+    socket.on("message:edited", onMessageEdited);
+    socket.on("message:deleted", onMessageDeleted);
     return () => {
       socket.off("message:new", onNew);
       socket.off("conversation:updated", onConvUpdated);
@@ -499,6 +571,8 @@ export default function ChatPage() {
       socket.off("message:read", onMessageRead);
       socket.off("device:identity-published", onDevicePublished);
       socket.off("message:envelope-added", onEnvelopeAdded);
+      socket.off("message:edited", onMessageEdited);
+      socket.off("message:deleted", onMessageDeleted);
     };
   }, [me, myKeypair, decryptMessage, refreshDeviceKeys]);
 
@@ -828,6 +902,118 @@ export default function ChatPage() {
       // Re-enfocar el input después del re-render que dispara setSending(false).
       // requestAnimationFrame asegura que React ya pintó el `disabled=false`.
       requestAnimationFrame(() => composerRef.current?.focus());
+    }
+  }
+
+  /**
+   * Fase 25 — comienza edición de un mensaje propio. Pone el composer en
+   * modo "edit" y prefilea el draft con el plaintext actual. El usuario
+   * puede cancelar (botón X) o guardar (botón Check).
+   */
+  function startEditMessage(msg: RenderedMessage) {
+    if (!msg.plaintext) return;
+    if (msg.contentType !== "text/plain") return; // solo texto editable
+    setEditingMessageId(msg.id);
+    setDraft(msg.plaintext);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
+  function cancelEdit() {
+    setEditingMessageId(null);
+    setDraft("");
+  }
+
+  /**
+   * Fase 25 — guarda los cambios al editar un mensaje. Re-cifra el nuevo
+   * texto para TODOS los devices destinatarios actuales y manda PATCH.
+   * El render se actualiza al recibir el socket event `message:edited`.
+   */
+  async function saveEdit() {
+    if (!editingMessageId || !selectedId || !me || !myKeypair) return;
+    const text = draft.trim();
+    if (!text) return;
+    const messageId = editingMessageId;
+    setSending(true);
+    try {
+      await refreshDeviceKeys(selectedId);
+      const recipients = Object.values(deviceKeysRef.current).filter(
+        (d) => d.identityPublicKey,
+      );
+      if (recipients.length === 0) throw new Error("no_recipients");
+
+      const ptBytes = await encodeUtf8(text);
+      const envelopes = await Promise.all(
+        recipients.map(async (d) => {
+          const peerPub = await fromBase64(d.identityPublicKey!);
+          const env = await encryptFor(ptBytes, peerPub, myKeypair.privateKey);
+          return {
+            recipientDeviceId: d.deviceId,
+            ciphertext: await toBase64(env.ciphertext),
+            nonce: await toBase64(env.nonce),
+          };
+        }),
+      );
+
+      await api(`/messages/${messageId}`, {
+        method: "PATCH",
+        auth: true,
+        body: { envelopes },
+      });
+
+      // Actualización optimista local (el socket event llegará y reemplazará
+      // el state otra vez con el plaintext consistente, pero esto da feedback
+      // inmediato al usuario que editó).
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                plaintext: text,
+                editedAt: new Date().toISOString(),
+                editCount: m.editCount + 1,
+              }
+            : m,
+        ),
+      );
+
+      cancelEdit();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "edit_failed");
+    } finally {
+      setSending(false);
+      requestAnimationFrame(() => composerRef.current?.focus());
+    }
+  }
+
+  /**
+   * Fase 25 — borra un mensaje propio. Soft delete server-side: los
+   * envelopes se preservan en BD. El render local se actualiza al recibir
+   * el socket event `message:deleted`.
+   */
+  async function confirmDelete() {
+    if (!confirmDeleteId) return;
+    const messageId = confirmDeleteId;
+    try {
+      await api(`/messages/${messageId}`, {
+        method: "DELETE",
+        auth: true,
+      });
+      // Optimista: el socket event reemplazará igual.
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                deletedAt: new Date().toISOString(),
+                deletedByUserId: me?.user.id ?? null,
+              }
+            : m,
+        ),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "delete_failed");
+    } finally {
+      setConfirmDeleteId(null);
     }
   }
 
@@ -1299,51 +1485,107 @@ export default function ChatPage() {
                           className="mt-1"
                         />
                       )}
-                      {/* ⭐ Star button — aparece al hover, del lado opuesto al bubble */}
-                      {mine && (
-                        <button
-                          type="button"
-                          className="self-center opacity-0 group-hover:opacity-100 transition text-yellow-500/60 hover:text-yellow-600"
-                          title={isStarred ? "Quitar de guardados" : "Guardar mensaje"}
-                          onClick={() => void handleStar(msg.id, selectedConv.id)}
-                        >
-                          <Star size={13} fill={isStarred ? "currentColor" : "none"} />
-                        </button>
+                      {/* Botones de acción al hover, del lado opuesto al bubble */}
+                      {mine && !msg.deletedAt && (
+                        <div className="self-center flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                          {/* Editar (solo texto, dentro de 24h) */}
+                          {msg.contentType === "text/plain" &&
+                            Date.now() - new Date(msg.createdAt).getTime() < 24 * 60 * 60 * 1000 && (
+                              <button
+                                type="button"
+                                className="text-muted-foreground hover:text-primary"
+                                title="Editar mensaje"
+                                onClick={() => startEditMessage(msg)}
+                              >
+                                <Pencil size={13} />
+                              </button>
+                            )}
+                          {/* Borrar */}
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-destructive"
+                            title="Borrar mensaje"
+                            onClick={() => setConfirmDeleteId(msg.id)}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                          {/* Star */}
+                          <button
+                            type="button"
+                            className="text-yellow-500/60 hover:text-yellow-600"
+                            title={isStarred ? "Quitar de guardados" : "Guardar mensaje"}
+                            onClick={() => void handleStar(msg.id, selectedConv.id)}
+                          >
+                            <Star size={13} fill={isStarred ? "currentColor" : "none"} />
+                          </button>
+                        </div>
                       )}
-                      <div
-                        className={[
-                          "max-w-[80%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed shadow-sm md:max-w-[65%]",
-                          mine
-                            ? "rounded-br-sm bg-primary text-primary-foreground"
-                            : "rounded-bl-sm bg-card text-card-foreground ring-1 ring-border",
-                        ].join(" ")}
-                      >
-                        {!mine && selectedConv.type === "group" && (
-                          <div className="mb-0.5 text-[11px] font-semibold text-primary">
-                            {sender?.displayName ?? "?"}
-                          </div>
-                        )}
-                        <MessageBody msg={msg} mine={mine} currentUserId={me.user.id} />
+                      {msg.deletedAt ? (
+                        // Tombstone: el mensaje fue borrado por el sender (o un admin
+                        // futuro). Audit log conserva metadata; envelopes en BD se
+                        // mantienen para que un admin que era miembro pueda auditar.
                         <div
                           className={[
-                            "mt-1 flex items-center justify-end gap-1 text-[10px]",
-                            mine ? "text-primary-foreground/70" : "text-muted-foreground",
+                            "max-w-[80%] rounded-2xl px-3.5 py-2 text-xs italic shadow-sm md:max-w-[65%]",
+                            "bg-muted text-muted-foreground border border-border",
+                            mine ? "rounded-br-sm" : "rounded-bl-sm",
                           ].join(" ")}
                         >
-                          {formatHour(msg.createdAt)}
-                          {/* Fase 18: ✓✓ read receipts (solo mensajes propios) */}
-                          {mine && (
-                            <span
-                              title={readByAll ? "Visto por todos" : readByAny ? "Visto" : "Enviado"}
-                              className={readByAny ? "text-blue-600" : "opacity-50"}
-                            >
-                              {readByAny ? "✓✓" : "✓"}
+                          <div className="flex items-center gap-1.5">
+                            <Trash2 size={11} />
+                            <span>
+                              {mine
+                                ? "Borraste este mensaje"
+                                : `${sender?.displayName ?? "Alguien"} eliminó este mensaje`}
                             </span>
-                          )}
+                            <span className="opacity-60">· {formatHour(msg.deletedAt)}</span>
+                          </div>
                         </div>
-                      </div>
-                      {/* ⭐ Star button para mensajes recibidos */}
-                      {!mine && (
+                      ) : (
+                        <div
+                          className={[
+                            "max-w-[80%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed shadow-sm md:max-w-[65%]",
+                            mine
+                              ? "rounded-br-sm bg-primary text-primary-foreground"
+                              : "rounded-bl-sm bg-card text-card-foreground ring-1 ring-border",
+                          ].join(" ")}
+                        >
+                          {!mine && selectedConv.type === "group" && (
+                            <div className="mb-0.5 text-[11px] font-semibold text-primary">
+                              {sender?.displayName ?? "?"}
+                            </div>
+                          )}
+                          <MessageBody msg={msg} mine={mine} currentUserId={me.user.id} />
+                          <div
+                            className={[
+                              "mt-1 flex items-center justify-end gap-1 text-[10px]",
+                              mine ? "text-primary-foreground/70" : "text-muted-foreground",
+                            ].join(" ")}
+                          >
+                            {/* Fase 25: indicador "(editado)" */}
+                            {msg.editCount > 0 && msg.editedAt && (
+                              <span
+                                className="italic opacity-80"
+                                title={`Editado ${formatHour(msg.editedAt)}`}
+                              >
+                                editado ·
+                              </span>
+                            )}
+                            {formatHour(msg.createdAt)}
+                            {/* Fase 18: ✓✓ read receipts (solo mensajes propios) */}
+                            {mine && (
+                              <span
+                                title={readByAll ? "Visto por todos" : readByAny ? "Visto" : "Enviado"}
+                                className={readByAny ? "text-blue-600" : "opacity-50"}
+                              >
+                                {readByAny ? "✓✓" : "✓"}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      {/* Botones de acción para mensajes recibidos (solo star + delete por ahora) */}
+                      {!mine && !msg.deletedAt && (
                         <button
                           type="button"
                           className="self-center opacity-0 group-hover:opacity-100 transition text-yellow-500/60 hover:text-yellow-600"
@@ -1361,9 +1603,36 @@ export default function ChatPage() {
 
             {/* Composer */}
             <form
-              onSubmit={onSend}
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (editingMessageId) {
+                  void saveEdit();
+                } else {
+                  void onSend(e);
+                }
+              }}
               className="border-t border-border bg-card px-3 py-3"
             >
+              {/* Fase 25: banner cuando estamos en modo "edit" */}
+              {editingMessageId && (
+                <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-1.5 text-xs">
+                  <div className="flex items-center gap-2 text-primary">
+                    <Pencil size={12} />
+                    <span className="font-medium">Editando mensaje</span>
+                    <span className="text-muted-foreground">
+                      · presiona Esc o click ✕ para cancelar
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={cancelEdit}
+                    className="text-muted-foreground hover:text-foreground"
+                    title="Cancelar edición"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
               {error && (
                 <div className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
                   {error}{" "}
@@ -1458,12 +1727,20 @@ export default function ChatPage() {
                       setMentionQuery(match ? (match[1] ?? null) : null);
                     }}
                     onKeyDown={(e) => {
-                      if (e.key === "Escape") setMentionQuery(null);
+                      if (e.key === "Escape") {
+                        if (editingMessageId) {
+                          cancelEdit();
+                        } else {
+                          setMentionQuery(null);
+                        }
+                      }
                     }}
                     placeholder={
                       uploading
                         ? "Cifrando y subiendo…"
-                        : "Escribe un mensaje cifrado…"
+                        : editingMessageId
+                          ? "Edita tu mensaje…"
+                          : "Escribe un mensaje cifrado…"
                     }
                     disabled={sending || uploading}
                     className="h-10 rounded-full px-4"
@@ -1474,11 +1751,13 @@ export default function ChatPage() {
                   type="submit"
                   size="icon"
                   disabled={sending || uploading || !draft.trim()}
-                  title="Enviar"
+                  title={editingMessageId ? "Guardar cambios" : "Enviar"}
                   className="rounded-full"
                 >
                   {sending ? (
                     <Loader2 className="size-4 animate-spin" />
+                  ) : editingMessageId ? (
+                    <Check className="size-4" />
                   ) : (
                     <Send className="size-4" />
                   )}
@@ -1562,6 +1841,51 @@ export default function ChatPage() {
           setSelectedId(convId);
         }}
       />
+
+      {/* Fase 25: Confirmación de borrado de mensaje */}
+      {confirmDeleteId && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 px-4 backdrop-blur-sm"
+          onClick={() => setConfirmDeleteId(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+                <Trash2 size={16} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold">¿Borrar este mensaje?</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Se ocultará para todos los miembros de la conversación. El
+                  contenido permanece archivado en el servidor para auditoría
+                  por seguridad — solo admins pueden recuperar el original
+                  desde el panel.
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfirmDeleteId(null)}
+              >
+                Cancelar
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => void confirmDelete()}
+              >
+                <Trash2 className="size-3.5" />
+                Borrar
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
