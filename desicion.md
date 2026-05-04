@@ -1405,3 +1405,99 @@ hace el developer una sola vez con su keystore.
 6. Compartir pantalla por Cast / Miracast → área negra.
 7. Admin sube `can_share_externally = true` → logout/login → screenshots
    funcionan normal.
+
+---
+
+## [2026-05-03] Audit de pendientes (excluyendo llamadas)
+
+**Contexto.** Después de Fase 23b (multi-device backfill funcionando) y
+del primer APK debug instalable, el usuario pidió listar qué pendientes
+quedan. Las llamadas de voz/video (Fase 22) están explícitamente
+diferidas, así que no entran a este audit.
+
+### Estado actual — lo que YA está hecho
+
+| Bloque | Estado |
+|---|---|
+| Chat E2EE base (Fase 1-13) | ✅ |
+| Adjuntos cifrados + PIN + acceso restringido (Fase 14) | ✅ |
+| Actividades + tareas + RSVP (Fase 15) | ✅ |
+| Calendario mensual (Fase 16) | ✅ (vista semanal pendiente) |
+| Galería de medios + mensajes guardados (Fase 17) | ✅ |
+| Presencia online + read receipts ✓✓ (Fase 18) | ✅ |
+| Push notifications + @menciones (Fase 19) | ✅ |
+| Vista semanal del calendario (Fase 20) | ❌ pending |
+| Refresh visual + temas (post-Fase 20) | ✅ |
+| Permisos granulares por usuario (Fase 24) | ✅ |
+| Wrapper Capacitor Android + FLAG_SECURE (Fase 23a) | ✅ |
+| Multi-device backfill E2EE (Fase 23b) | ✅ |
+| App icon oficial + splash (Imagotipo) | ✅ |
+
+### Pendientes — propuesta de prioridad
+
+#### CRÍTICOS para uso empresarial diario
+
+| # | Feature | Razón | Sesiones |
+|---|---|---|---|
+| C1 | **Editar mensajes** | Usuarios mandan typos o info incorrecta. Sin esto la única opción es mandar otro mensaje aclarando, ruidoso. Implementación: PATCH `/messages/:id` que reemplaza envelopes (re-cifrado para todos los devices). | 2 |
+| C2 | **Borrar mensajes (delete-for-everyone)** | Mismo motivo. DB-wise es trivial (cascade delete de envelopes); la complicación es socket event para que se actualice en todas las sesiones. | 1 |
+| C3 | **Cambio de contraseña por el propio usuario** | Hoy solo hay reset por admin via script CLI. Falta endpoint POST /auth/password/change con TOTP requerido. | 1 |
+| C4 | **Rotación de TOTP por el propio usuario** | Si alguien sospecha que su TOTP se filtró, debería poder rotarlo sin pedirle al admin. POST /auth/totp/rotate con QR nuevo + verificación del actual. | 1 |
+
+#### IMPORTANTES — UX y productividad
+
+| # | Feature | Razón | Sesiones |
+|---|---|---|---|
+| I1 | **Búsqueda de mensajes** | "Dónde estaba ese contrato que me mandó Jose hace 3 semanas" — el caso de uso #1 de chat empresarial. Con E2EE el server NO ve el plaintext, así que la búsqueda debe ser CLIENT-SIDE: cliente descifra al cargar y busca en memoria + IndexedDB. | 3 |
+| I2 | **Reacciones a mensajes (emoji)** | UX moderna, reduce ruido de "ok 👍" mensajes. Schema: tabla `message_reactions(message_id, user_id, emoji)`. No necesita E2EE (el emoji es metadata). | 1 |
+| I3 | **Replies / quote** | Citar un mensaje específico al responder. Schema: `messages.reply_to_message_id`. Renderiza como bloque arriba del bubble. | 2 |
+| I4 | **Paginación scroll-up** | Hoy solo cargamos los 50 mensajes más recientes. Faltan los anteriores al scrollear arriba. Endpoint ya soporta `?before=`, falta UI. | 1 |
+| I5 | **Vista semanal del calendario (Fase 20)** | Schema y datos listos, falta toggle UI + render de week. | 1 |
+
+#### MEDIANOS — calidad y completitud
+
+| # | Feature | Razón | Sesiones |
+|---|---|---|---|
+| M1 | **Export de chat** | Flag `can_export_chat` está en plan pero nunca se agregó al schema/permisos. Útil para compliance y para usuarios saliendo de la empresa. Genera ZIP con JSON descifrado del lado cliente. | 2 |
+| M2 | **FCM nativo en el APK** | Hoy el push viene del WebView (web push). FCM nativo es mejor en background y no depende de que el WebView esté vivo. Capacitor: `@capacitor/push-notifications` + Firebase setup. | 2 |
+| M3 | **iOS nativo (Capacitor)** | El JS bridge ya está listo. Falta `pnpm cap add ios` + plugin Swift equivalente al SecurityPlugin (en iOS NO se puede bloquear screenshots, solo detectar via `UIScreen.captured`; el plugin notificaría al server para audit). | 3 |
+| M4 | **Tests unitarios + integración** | Hoy no hay. Para producción pequeña no es bloqueante pero es deuda técnica. Vitest para shared/, Playwright para flujos E2E. | 4+ |
+
+#### BAJOS — nice-to-have
+
+- Mensaje "se está escribiendo..." con avatar específico (hoy solo dice
+  "alguien escribiendo" si lo tenemos). Verificar.
+- Voz mensajes (audio cifrado, similar a attachments).
+- Stickers / GIFs internos.
+- Threads dentro de un mensaje (estilo Slack).
+
+### Recomendación de orden
+
+**Sprint próximo (~5 sesiones)**:
+1. C1+C2: editar/borrar mensajes — un commit grande, comparten
+   infraestructura (broadcast + UI long-press)
+2. C3+C4: cambio de password + rotación TOTP — sesión de seguridad
+3. I4: paginación scroll-up — lo aprovechamos al hacer C1/C2
+4. I5: vista semanal del calendario — pequeño, cierra Fase 20
+
+**Sprint siguiente (~4 sesiones)**:
+5. I1: búsqueda client-side — feature grande, vale la pena hacerlo
+   en su propia sesión
+6. I2+I3: reacciones + replies — ambos comparten UI de "interacciones
+   con mensaje"
+
+**Después (depende de prioridad real)**:
+7. M1: export — si compliance lo exige
+8. M2+M3: FCM + iOS — cuando haya presión móvil real
+9. M4: tests — al final, quando estabilicen las features
+
+### Lo que se mantiene fuera de scope
+
+- **Llamadas de voz/video** — diferidas explícitamente por el usuario.
+- **Federación con otros servidores** — esto es un chat de empresa, no
+  Matrix.
+- **Cifrado homomórfico para búsqueda server-side** — overkill, la
+  búsqueda client-side cubre el caso.
+- **Rotación automática de keys (forward secrecy completa)** — Double
+  Ratchet sería un proyecto en sí. Aceptamos la propiedad actual
+  (un device comprometido puede leer mensajes pasados que tenía).

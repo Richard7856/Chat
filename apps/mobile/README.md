@@ -78,24 +78,40 @@ pnpm cap:sync
 
 ## App icon y splash screen
 
-El proyecto generado trae un placeholder feo de Capacitor. Para usar el
-logo oficial:
+El icon oficial vive en `apps/mobile/assets/icon.png` (1024×1024, generado
+desde `imagotipo.png` con padding blanco). El splash en `assets/splash.png`.
 
-1. Coloca un PNG cuadrado de 1024×1024 en `apps/mobile/icon.png`
-   (idealmente con padding ~10%, fondo blanco o transparente).
+### Regenerar iconos cuando cambia el logo
 
-2. Instala el plugin de assets de Capacitor:
-   ```bash
-   cd apps/mobile
-   pnpm add -D @capacitor/assets
-   pnpm exec capacitor-assets generate --android
-   ```
+`@capacitor/assets` requiere que `sharp` (procesamiento de imágenes nativo)
+esté compilado. En este repo pnpm no corre los build scripts por default,
+así que `sharp` falla. Workaround manual con `sips` (macOS):
 
-3. Esto regenera `mipmap-*/ic_launcher.png` y splash screens en el
-   proyecto Android. Comitea los cambios.
+```bash
+cd apps/mobile
 
-> El asset de splash y los iconos adaptativos se generan
-> automáticamente. Si quieres tunearlos finamente, abre Android Studio.
+# 1. Reemplaza assets/icon.png con tu imagen 1024×1024 cuadrada
+# 2. Si tu fuente no es cuadrada, usa sips para padding:
+sips -Z 880 ~/Downloads/nuevo-logo.png --out /tmp/r.png
+sips -p 1024 1024 --padColor FFFFFF /tmp/r.png --out assets/icon.png
+
+# 3. Regenera todas las densidades de mipmap:
+RES=android/app/src/main/res
+for set in mipmap-mdpi:48 mipmap-hdpi:72 mipmap-xhdpi:96 mipmap-xxhdpi:144 mipmap-xxxhdpi:192; do
+  dir=${set%:*}; size=${set#*:}
+  sips -Z $size assets/icon.png --out "$RES/$dir/ic_launcher.png" >/dev/null
+  cp "$RES/$dir/ic_launcher.png" "$RES/$dir/ic_launcher_round.png"
+  cp "$RES/$dir/ic_launcher.png" "$RES/$dir/ic_launcher_foreground.png"
+done
+
+# 4. Sync + rebuild
+pnpm cap:sync
+cd android && ./gradlew assembleDebug
+```
+
+Si quieres usar `@capacitor/assets` automático: arregla sharp con
+`pnpm rebuild sharp` + asegurarte de que el postinstall corra. Mientras
+tanto el script manual de arriba funciona.
 
 ---
 
