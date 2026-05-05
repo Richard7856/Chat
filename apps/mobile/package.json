@@ -4,7 +4,7 @@
   "private": true,
   "description": "Wrapper Capacitor de Euromex Chat para Android (y eventualmente iOS).",
   "scripts": {
-    "cap:init": "cap init Euromex com.euromex.chat --web-dir public",
+    "cap:init": "cap init Euromex com.grupoeuromex.chat --web-dir public",
     "cap:add:android": "cap add android",
     "cap:sync": "cap sync android",
     "cap:open:android": "cap open android",

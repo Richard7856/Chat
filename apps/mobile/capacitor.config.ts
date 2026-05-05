@@ -18,7 +18,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
  * (con tu IP real, no 127.0.0.1, porque el WebView corre en el dispositivo).
  */
 const config: CapacitorConfig = {
-  appId: "com.euromex.chat",
+  appId: "com.grupoeuromex.chat",
   appName: "Euromex Chat",
   // webDir requerido por Capacitor aunque carguemos remoto. Es solo
   // un placeholder con un index.html mínimo por si la carga remota falla.

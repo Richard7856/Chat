@@ -135,6 +135,12 @@ export default function ChatPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<RenderedMessage[]>([]);
+  // Fase 26 (I4) — paginación scroll-up: traer mensajes anteriores al
+  // scrollear cerca del top. `loadingOlder` previene fetches duplicados;
+  // `hasMoreMessages` apaga la mecánica cuando el server ya devolvió un
+  // batch incompleto (no hay más historia).
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(true);
   const [draft, setDraft] = useState("");
   const [convQuery, setConvQuery] = useState("");
   const [showNew, setShowNew] = useState(false);
@@ -168,6 +174,11 @@ export default function ChatPage() {
   // Fase 19: @mention autocomplete
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Fase 26 (I4) — al prependear mensajes viejos cambia el scrollHeight; sin
+  // este ref el viewport "saltaría" y el usuario perdería el contexto. El
+  // valor lo escribe loadOlderMessages JUSTO antes de mutar el estado, y
+  // el useEffect de scroll-bottom lo consume para preservar la posición.
+  const prependScrollHeightRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Fix post-Fase 20: ref al compositor para re-enfocarlo después de send.
   // Sin esto, el toggle de `disabled` durante onSend hace que React pierda el foco.
@@ -696,6 +707,11 @@ export default function ChatPage() {
       // messagesRef.current y queremos que ya tenga los mensajes recién
       // descargados.
       messagesRef.current = rendered;
+      // Fase 26 (I4) — reset paginación al cambiar de conv. Si el primer
+      // batch ya vino incompleto (< limit), no hay nada anterior que cargar.
+      setLoadingOlder(false);
+      setHasMoreMessages(rendered.length >= 50);
+      prependScrollHeightRef.current = null;
 
       try {
         await api(`/conversations/${convId}/read`, {
@@ -722,7 +738,56 @@ export default function ChatPage() {
     })();
   }, [selectedId, myKeypair, refreshDeviceKeys, decryptMessage, me]);
 
+  // Fase 26 (I4) — fetch del batch anterior usando created_at del mensaje
+  // más viejo como cursor. El server ya soporta ?before=<iso-date>; aquí
+  // solo encadenamos: descifrar → prepend → preservar scroll.
+  const loadOlderMessages = useCallback(async () => {
+    if (!selectedId || !myKeypair) return;
+    if (loadingOlder || !hasMoreMessages) return;
+    const oldest = messagesRef.current[0];
+    if (!oldest?.createdAt) return;
+
+    setLoadingOlder(true);
+    // Snapshot del scrollHeight ANTES del re-render — el efecto de
+    // restauración lo usa para dejar visible el mismo mensaje que el
+    // usuario estaba leyendo (no salta al inicio ni al final).
+    prependScrollHeightRef.current = scrollRef.current?.scrollHeight ?? null;
+
+    try {
+      const r = await api<{ messages: Message[] }>(
+        `/conversations/${selectedId}/messages?limit=50&before=${encodeURIComponent(oldest.createdAt)}`,
+        { method: "GET", auth: true },
+      );
+      if (r.messages.length === 0) {
+        setHasMoreMessages(false);
+        prependScrollHeightRef.current = null;
+        return;
+      }
+      const rendered = await Promise.all(
+        r.messages.map((m) => decryptMessage(m, myKeypair)),
+      );
+      setMessages((prev) => [...rendered, ...prev]);
+      messagesRef.current = [...rendered, ...messagesRef.current];
+      // Si el batch no llenó el limit, ya vimos toda la historia.
+      if (rendered.length < 50) setHasMoreMessages(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "load_older_failed");
+      prependScrollHeightRef.current = null;
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [selectedId, myKeypair, loadingOlder, hasMoreMessages, decryptMessage]);
+
   useEffect(() => {
+    // Si el último cambio en `messages` fue un prepend de historia, no
+    // saltamos al fondo: ajustamos scrollTop para mantener visible el
+    // mensaje que el usuario estaba leyendo.
+    if (prependScrollHeightRef.current !== null && scrollRef.current) {
+      const newHeight = scrollRef.current.scrollHeight;
+      scrollRef.current.scrollTop = newHeight - prependScrollHeightRef.current;
+      prependScrollHeightRef.current = null;
+      return;
+    }
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
       behavior: "smooth",
@@ -1397,6 +1462,20 @@ export default function ChatPage() {
             {/* Messages */}
             <div
               ref={scrollRef}
+              onScroll={(e) => {
+                // Trigger paginación cuando el usuario está cerca del top.
+                // El threshold (100px) evita disparos en cada wheel-tick
+                // mientras carga; loadingOlder + hasMoreMessages cierran
+                // el doble click.
+                if (
+                  e.currentTarget.scrollTop < 100 &&
+                  !loadingOlder &&
+                  hasMoreMessages &&
+                  messages.length > 0
+                ) {
+                  void loadOlderMessages();
+                }
+              }}
               className="relative flex-1 overflow-y-auto px-4 py-4"
             >
               <Watermark
@@ -1405,6 +1484,16 @@ export default function ChatPage() {
               />
 
               <div className="relative z-[2] space-y-1">
+                {loadingOlder && (
+                  <div className="flex justify-center py-2">
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  </div>
+                )}
+                {!hasMoreMessages && messages.length > 0 && (
+                  <div className="py-2 text-center text-xs text-muted-foreground/60">
+                    Inicio de la conversación
+                  </div>
+                )}
                 {messages.map((msg) => {
                   if (msg.status === "system" && msg.systemEvent) {
                     return (

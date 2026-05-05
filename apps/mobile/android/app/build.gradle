@@ -28,10 +28,10 @@ def hasReleaseSigning = releaseKeystorePassword != null &&
                         file(releaseKeystorePath).exists()
 
 android {
-    namespace "com.euromex.chat"
+    namespace "com.grupoeuromex.chat"
     compileSdk rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.euromex.chat"
+        applicationId "com.grupoeuromex.chat"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

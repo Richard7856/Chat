@@ -135,6 +135,17 @@ export default function CalendarPage() {
       else setMonth((m) => m + 1);
     }
   }
+  // Reset rápido al período "ahora" — ambos modos lo necesitan después de
+  // navegar varias páginas atrás/adelante.
+  function goToToday() {
+    if (viewMode === "week") {
+      setWeekStart(startOfWeek(new Date()));
+    } else {
+      const now = new Date();
+      setYear(now.getFullYear());
+      setMonth(now.getMonth());
+    }
+  }
 
   // ── Build day map ───────────────────────────────────────────────────────────
   const dayMap = useMemo(() => {
@@ -207,6 +218,14 @@ export default function CalendarPage() {
             <Button variant="ghost" size="icon" className="size-8" onClick={nextPeriod}>
               <ChevronRight className="size-4" />
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="ml-1 h-8 px-3 text-xs"
+              onClick={goToToday}
+            >
+              Hoy
+            </Button>
           </div>
 
           {/* Fase 20: toggle vista mensual / semanal */}
@@ -275,26 +294,42 @@ export default function CalendarPage() {
                       {dayLabel}
                     </div>
                     <div className="space-y-1">
-                      {items.map((item) => (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => setSelected(item)}
-                          className={[
-                            "flex w-full items-start gap-1 rounded px-1.5 py-1 text-[11px] text-left transition-colors hover:opacity-80",
-                            item.kind === "activity"
-                              ? "bg-primary/15 text-primary"
-                              : "bg-green-500/15 text-green-700",
-                          ].join(" ")}
-                        >
-                          {item.kind === "activity" ? (
-                            <CalendarDays className="size-3 shrink-0 mt-0.5" />
-                          ) : (
-                            <CheckSquare className="size-3 shrink-0 mt-0.5" />
-                          )}
-                          <span className="break-words leading-tight">{item.title}</span>
-                        </button>
-                      ))}
+                      {items.map((item) => {
+                        // En vista semanal hay espacio para mostrar la hora
+                        // de las actividades — dato útil para planear el día.
+                        // Las tareas solo tienen fecha (no hora), así que se
+                        // omite el prefijo.
+                        const time = item.kind === "activity" && item.activity?.scheduledAt
+                          ? new Date(item.activity.scheduledAt).toLocaleTimeString("es-MX", {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              hour12: false,
+                            })
+                          : null;
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => setSelected(item)}
+                            className={[
+                              "flex w-full items-start gap-1 rounded px-1.5 py-1 text-[11px] text-left transition-colors hover:opacity-80",
+                              item.kind === "activity"
+                                ? "bg-primary/15 text-primary"
+                                : "bg-green-500/15 text-green-700",
+                            ].join(" ")}
+                          >
+                            {item.kind === "activity" ? (
+                              <CalendarDays className="size-3 shrink-0 mt-0.5" />
+                            ) : (
+                              <CheckSquare className="size-3 shrink-0 mt-0.5" />
+                            )}
+                            <span className="break-words leading-tight">
+                              {time && <span className="font-medium">{time} </span>}
+                              {item.title}
+                            </span>
+                          </button>
+                        );
+                      })}
                       {items.length === 0 && (
                         <p className="text-center text-[10px] text-muted-foreground/40 py-2">–</p>
                       )}

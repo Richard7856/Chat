@@ -62,8 +62,8 @@ nativas que vamos a editar (manifest, plugin de seguridad, recursos).
 
 El plugin nativo Java + el registro en MainActivity ya están commiteados:
 
-- `android/app/src/main/java/com/euromex/chat/security/SecurityPlugin.java`
-- `android/app/src/main/java/com/euromex/chat/MainActivity.java` (registro)
+- `android/app/src/main/java/com/grupoeuromex/chat/security/SecurityPlugin.java`
+- `android/app/src/main/java/com/grupoeuromex/chat/MainActivity.java` (registro)
 
 Capacitor 6 genera el proyecto base en Java por default; mantenemos el plugin en
 Java también para evitar tener que agregar la toolchain de Kotlin a Gradle.

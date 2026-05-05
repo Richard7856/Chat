@@ -208,7 +208,7 @@ Pero Xcode no los ve hasta que los agregues al target:
 
 1. Ve a https://developer.apple.com/account/resources/identifiers/list
 2. "+" → App IDs → "App"
-3. **Bundle ID**: `com.euromex.chat` (debe coincidir EXACTO con
+3. **Bundle ID**: `com.grupoeuromex.chat` (debe coincidir EXACTO con
    `capacitor.config.ts:appId`)
 4. **Capabilities**: marca solo lo que uses. Por ahora ninguno especial.
 5. "Continue" → "Register"
@@ -219,7 +219,7 @@ Pero Xcode no los ve hasta que los agregues al target:
 2. Click sobre el proyecto "App" en el Navigator
 3. Tab "Signing & Capabilities":
    - **Team**: tu cuenta Apple Developer (debería aparecer en el dropdown)
-   - **Bundle Identifier**: `com.euromex.chat`
+   - **Bundle Identifier**: `com.grupoeuromex.chat`
    - ☑ "Automatically manage signing"
    - Xcode genera el provisioning profile y certificados solo
 4. Tab "General":
@@ -257,7 +257,7 @@ tu cuenta. Reabre la app.
    - Platform: iOS
    - Name: Euromex Chat
    - Primary language: Spanish (Mexico)
-   - Bundle ID: com.euromex.chat (debe aparecer en el dropdown)
+   - Bundle ID: com.grupoeuromex.chat (debe aparecer en el dropdown)
    - SKU: `euromex-chat-mx-1` (cualquier identificador único interno)
 4. Una vez creada, llena:
    - **App Information**: categoría (Business), copyright (© 2026 Grupo Euromex)

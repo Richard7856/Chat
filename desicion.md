@@ -123,10 +123,14 @@ sudo systemctl start euromex-backup.service
 
 ## Estado actual
 
-- **Fase:** 13 (última completada) — Re-auth TOTP + soft logout ✅
-- **Estado:** producción corriendo. Todas las fases del plan original
-  completadas + extensiones post-plan (10, 12, 13, botón admin en chat).
-- **Última actualización:** 2026-04-29
+- **Fase:** 26 (última completada) — Sprint del audit 2026-05-03 cerrado:
+  C1+C2 (editar/borrar mensajes), C3+C4 (cambio password + rotación TOTP),
+  I4 (paginación scroll-up), I5 (vista semanal del calendario, polish).
+- **Estado:** producción corriendo. Mobile: APK debug + release signing
+  listos, iOS scaffold + privacy policy publicados, package renombrado a
+  `com.grupoeuromex.chat`. **Pendiente desplegar al VPS** los commits del
+  2026-05-04 al 2026-05-05 (rename, privacy policy, C3+C4, I4, I5 polish).
+- **Última actualización:** 2026-05-05
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
   ⚠️ El VPS debe estar en esta rama: `git checkout claude/private-chat-mac-auth-e9QYn`
 - **Plan aprobado:** `/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md`
@@ -169,11 +173,27 @@ pendiente de aprobación de directivos de Euromex. **Cutover es ~3 comandos de
 
 **No hay pasos bloqueantes.** El proyecto está vivo y operacional.
 
-1. **Fase 11 — SSO/JWT:** pendiente de definir scope con el usuario antes
+0. **Pendientes inmediatos antes del próximo feature:**
+   - Desplegar al VPS los commits del 2026-05-04 al 2026-05-05
+     (`git pull && pnpm install && cd apps/web && pnpm build &&
+     systemctl restart euromex-api euromex-web`). Especialmente
+     necesario para que `/privacy.html` deje de dar 404.
+   - Validar en producción: cambio de password, rotación TOTP,
+     editar/borrar mensajes, scroll-up en chat, vista semanal del
+     calendario con botón "Hoy".
+   - Mobile: rebuild del APK con el nuevo package
+     (`com.grupoeuromex.chat`), reservar el package en Play Console,
+     desinstalar el APK viejo del teléfono antes de instalar el nuevo.
+
+1. **Siguiente sprint (audit del 2026-05-03):** I1 búsqueda client-side
+   (~3 sesiones, feature grande), luego I2 reacciones + I3 replies
+   (comparten UI de "interacciones con mensaje").
+
+2. **Fase 11 — SSO/JWT:** pendiente de definir scope con el usuario antes
    de codear. Preguntas clave: ¿qué herramientas externas? ¿JWT emitido por
    Euromex Chat o consumido desde un IdP externo (Google Workspace, etc.)?
 
-2. **Migrar a dominio final `chat.grupoeuromex.com`** cuando los directivos
+3. **Migrar a dominio final `chat.grupoeuromex.com`** cuando los directivos
    autoricen mover DNS (o cuando Hostinger publique los A records):
    ```bash
    sed -i 's|chat.148-230-82-52.sslip.io|chat.grupoeuromex.com|g; s|api.chat.148-230-82-52.sslip.io|api.chat.grupoeuromex.com|g' \
@@ -203,6 +223,342 @@ pendiente de aprobación de directivos de Euromex. **Cutover es ~3 comandos de
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-05-05] Cierre del sprint del audit 2026-05-03 — I4 (scroll-up) + I5 (vista semanal, polish)
+
+- **Contexto:** el audit del 2026-05-03 propuso un sprint corto con C1+C2,
+  C3+C4, I4 e I5. C1-C4 ya estaban resueltos (commits `8817e02` Fase 25 y
+  `c8171c9` C3+C4). Quedaban I4 (paginación scroll-up) e I5 (vista semanal
+  del calendario) para cerrar el sprint completo.
+
+#### I4 — Paginación scroll-up en chat
+
+- **Endpoint preexistente:** `GET /conversations/:id/messages` en
+  [`apps/api/src/routes/conversations.ts`](apps/api/src/routes/conversations.ts:466)
+  ya soportaba `?before=<iso-date>&limit=<n>` (cursor por `created_at`).
+  Solo faltaba el frontend.
+- **Implementación ([`apps/web/app/app/chat/page.tsx`](apps/web/app/app/chat/page.tsx)):**
+  - Estados nuevos: `loadingOlder` (guard contra fetches duplicados),
+    `hasMoreMessages` (apaga la mecánica cuando el server devuelve un
+    batch incompleto).
+  - `prependScrollHeightRef`: snapshot del `scrollHeight` ANTES de
+    prepend. El `useEffect` que hacía `scrollTo(scrollHeight)` cada vez
+    que cambia `messages` ahora detecta el ref y restaura
+    `scrollTop = nuevoHeight − heightAnterior` para mantener visible el
+    mensaje que el usuario estaba leyendo. Si no hay ref, sigue el
+    comportamiento original (scroll a fondo).
+  - `loadOlderMessages` (`useCallback`): toma `messagesRef.current[0].createdAt`
+    como cursor, pide `limit=50`, descifra cada envelope con
+    `decryptMessage`, prepend a `messages` y a `messagesRef`. Si el batch
+    < 50 set `hasMoreMessages=false`.
+  - `onScroll` handler en el div del scroll-area: si
+    `scrollTop < 100 && !loadingOlder && hasMoreMessages`, dispara
+    `loadOlderMessages`. El threshold de 100px evita disparos cada
+    wheel-tick mientras carga.
+  - Al cambiar de conv: reset de `loadingOlder=false`,
+    `hasMoreMessages=(rendered.length>=50)`, `prependScrollHeightRef=null`.
+  - UI: `<Loader2/>` arriba durante `loadingOlder`; "Inicio de la
+    conversación" cuando `!hasMoreMessages && messages.length>0`.
+- **Por qué este patrón y no `IntersectionObserver`:** un sentinel
+  observer es más limpio para listas infinitas, pero el componente del
+  chat ya maneja muchos refs (`scrollRef`, `messagesRef`) y el
+  `onScroll` en el mismo div es una integración más simple, sin
+  dependencias nuevas. Si en el futuro la lista crece a miles de
+  mensajes y el render se vuelve pesado, vale la pena migrar a
+  virtualización (`react-virtuoso` o `tanstack-virtual`) y ahí sí
+  observer cobra sentido.
+- **Limitación E2EE consciente:** cada batch viejo se descifra entero
+  en cliente. Para conversaciones con histórico de miles de mensajes
+  esto puede ser lento al hacer scroll. Mitigación futura: caché en
+  IndexedDB de plaintexts ya descifrados (con la clave de device).
+
+#### I5 — Vista semanal del calendario (ya estaba; polish añadido)
+
+- **Hallazgo:** el audit del 2026-05-03 listaba I5 como pendiente, pero
+  el commit `d22d6fa` ("Fases 17-20 — media gallery, presence, push
+  notifications, @mentions, **weekly calendar**") ya la había
+  implementado. La auditoría no la registró bien.
+- **Lo que ya existía** en [`apps/web/app/app/calendar/page.tsx`](apps/web/app/app/calendar/page.tsx):
+  toggle Mes/Semana, helpers `startOfWeek` (ISO Lun-Dom)/`addDays`,
+  estado `viewMode` + `weekStart`, render grid 7 columnas con
+  min-h-[160px], `fetchRange` parametrizado por modo, navegación
+  prev/next que avanza semana o mes según `viewMode`, filtros
+  funcionando en ambas vistas.
+- **Polish añadido en esta sesión:**
+  1. Botón **"Hoy"** al lado del prev/next — patrón estándar de UX en
+     calendarios. Resetea `month`/`year` o `weekStart` según el modo
+     activo. Útil cuando el usuario navega 6 meses adelante y quiere
+     volver rápido.
+  2. **Hora de las actividades** en la vista semanal (formato `HH:MM`,
+     24h, locale `es-MX`). Las celdas semanales son más anchas que
+     las mensuales (que truncan), así que cabe la información extra
+     que sí ayuda a planear. Las tareas no muestran hora porque
+     `dueDate` solo guarda fecha sin hora.
+- **Por qué no añadí más:** el resto de mejoras posibles (drag-and-drop
+  para reagendar, vista diaria, export ICS) son features grandes que
+  no estaban pedidas y rompen el alcance de "cerrar sprint chico".
+
+#### Estado del sprint del 2026-05-03
+
+| Item | Estado | Commit |
+|---|---|---|
+| C1 — Editar mensajes | ✅ | `8817e02` (Fase 25) |
+| C2 — Borrar mensajes | ✅ | `8817e02` (Fase 25) |
+| C3 — Cambio de password | ✅ | `c8171c9` |
+| C4 — Rotación TOTP | ✅ | `c8171c9` |
+| I4 — Paginación scroll-up | ✅ | esta sesión |
+| I5 — Vista semanal | ✅ | `d22d6fa` (ya estaba) + polish esta sesión |
+
+**Sprint cerrado.** Próximos candidatos del audit (siguiente sprint):
+I1 (búsqueda client-side, ~3 sesiones), I2 (reacciones), I3 (replies).
+
+### [2026-05-05] Rename del package Android/iOS — `com.euromex.chat` → `com.grupoeuromex.chat`
+
+- **Contexto:** al intentar reservar el listing en Google Play Console, el
+  applicationId `com.euromex.chat` apareció como ya usado por otra cuenta
+  (no es del cliente). Misma situación esperable en App Store Connect.
+- **Decisión:** rename a `com.grupoeuromex.chat`. Sigue el estándar de
+  reverse-domain del FQDN real del cliente (`grupoeuromex.com`), garantiza
+  unicidad y comunica claramente a quién pertenece la app.
+- **Alternativas consideradas y por qué no:**
+  - `mx.com.grupoeuromex.chat` — añade prefijo país, pero raro y nadie del
+    ecosistema Android lo usa así. Descartado.
+  - `com.grupoeuromex.privatechat` / `com.grupoeuromex.app` — válidos pero
+    menos descriptivos. Si en el futuro se publica una "Euromex Calendar"
+    o "Euromex Suite", podemos seguir el patrón `com.grupoeuromex.<nombre>`.
+- **Archivos tocados (11):** `apps/mobile/capacitor.config.ts`,
+  `apps/mobile/package.json` (script `cap:init`), `apps/mobile/README.md`,
+  `apps/mobile/PUBLISHING.md`, `android/app/build.gradle` (`namespace` +
+  `applicationId`), `android/app/src/main/res/values/strings.xml`
+  (`package_name` + `custom_url_scheme`),
+  `android/app/src/main/assets/capacitor.config.json` (autogenerado, se
+  re-generaría con `pnpm cap sync` igual), `ios/App/App/capacitor.config.json`,
+  `ios/App/App.xcodeproj/project.pbxproj` (`PRODUCT_BUNDLE_IDENTIFIER` x2
+  Debug+Release), `MainActivity.java` (package + import),
+  `SecurityPlugin.java` (package). Los `.java` se movieron con `git mv` para
+  preservar history.
+- **Riesgos / consecuencias:**
+  - Cualquier APK debug previamente instalado en un device es una **app
+    distinta** desde la perspectiva de Android — tiene que desinstalarse
+    el viejo a mano antes de instalar el nuevo (no se puede actualizar
+    encima).
+  - El keystore de release sigue siendo válido (la firma no depende del
+    package name).
+  - Para iOS: si el bundle id `com.euromex.chat` ya estaba registrado en
+    Apple Developer Portal, hay que crear el App ID nuevo siguiendo
+    `PUBLISHING.md` sección B.6.
+- **Próximos pasos:**
+  1. `cd apps/mobile && pnpm cap sync android` (refresca configs derivados).
+  2. `pnpm build:android:debug` para verificar que el APK compila con el
+     package nuevo.
+  3. Instalar el APK nuevo en el teléfono **después de desinstalar el viejo**.
+  4. Reservar el package en Play Console.
+
+### [2026-05-04] C3 + C4 — Cambio de password y rotación de TOTP por el usuario
+
+- **Contexto:** hasta este punto solo el admin podía resetear password
+  via script CLI (`reset-password.ts`) y rotar TOTP requería intervención
+  manual en BD. Para review de Play Store / App Store es **flag de UX**
+  que el reviewer (con la cuenta demo) no pueda cambiar credenciales.
+- **C3 — POST `/auth/password`:**
+  - Requiere `currentPassword` + `newPassword` + `totpToken`. El TOTP es
+    el segundo factor que evita que una sesión robada cambie la contraseña.
+  - `revokeOtherDevices=true` por default → al cambiar password se
+    revocan TODOS los demás devices del usuario (zero-trust si la
+    contraseña vieja pudo haberse filtrado). El device actual se mantiene.
+  - Rechaza si `newPassword === currentPassword` para feedback claro al UX.
+  - Audit log: `password.changed` (con count de devices revocados),
+    `password.change_failed` (con `reason: current_password_invalid |
+    invalid_totp`).
+- **C4 — Rotación TOTP en dos pasos para que el secret nuevo NUNCA toque
+  BD si el usuario no demuestra haberlo configurado bien:**
+  1. `POST /auth/totp/begin` con TOTP actual → server genera secret nuevo,
+     lo cifra con `MASTER_ENC_KEY` y lo embebe en JWT corto (5 min) tipo
+     `totp-rotate`. Devuelve `{ rotationToken, otpauthUri, qrPngBase64 }`.
+  2. `POST /auth/totp/confirm` con `rotationToken` + TOTP del nuevo
+     autenticador → server verifica JWT, descifra el secret nuevo,
+     valida `totpToken` contra él, persiste reemplazando el viejo.
+  - Audit log: `totp.rotated`, `totp.rotate_begin_failed`,
+    `totp.rotate_confirm_failed`.
+- **UI:** [`apps/web/app/components/settings-modal.tsx`](apps/web/app/components/settings-modal.tsx)
+  con dos tabs ("Contraseña", "2FA / TOTP"). El TOTP panel es un wizard
+  de 3 steps (begin → confirm → done) con QR + otpauth URI expandible
+  para devices que no escanean. Acceso desde el icono Settings al lado
+  del LogOut en el sidebar del chat.
+- **Errores en español según código del server** (UX consistente):
+  `invalid_current_password` → "Contraseña actual incorrecta",
+  `invalid_totp` → "Código 2FA incorrecto",
+  `same_as_current` → "La nueva contraseña no puede ser igual a la actual",
+  `invalid_new_totp` → "Código del nuevo autenticador incorrecto",
+  `invalid_rotation_token` → "La sesión de rotación expiró".
+- **Alternativas descartadas:**
+  - Reset por email/SMS — el server no envía emails, y para una empresa
+    pequeña con TOTP enrollado el patrón actual es más seguro.
+  - "Forgot password" sin TOTP — abre la puerta a takeover por sesión
+    robada. El admin sigue siendo el camino para usuarios que perdieron
+    su autenticador.
+- **Riesgos:**
+  - Si el usuario pierde el TOTP **mientras** está en medio de la
+    rotación, el `rotationToken` expira en 5 min y queda con su TOTP
+    viejo intacto (no hay corrupción, solo frustración).
+  - El revoke-other-devices puede ser inesperado para el usuario;
+    documentado en el modal con texto explícito antes de confirmar.
+
+### [2026-05-04] Privacy policy estática para Play Store / App Store
+
+- **Contexto:** ambas tiendas exigen URL pública de privacy policy
+  durante la creación del listing. Hostearla externamente añade un
+  punto de fallo y un dominio extra que mantener.
+- **Decisión:** servirla estática desde
+  [`apps/web/public/privacy.html`](apps/web/public/privacy.html) — Next.js
+  sirve `public/` en runtime sin necesidad de rebuild para cambios al
+  archivo. URL final: `https://chat.<dominio>/privacy.html`.
+- **Cubre los 11 puntos auditados** por Google y Apple: identidad de la
+  empresa, datos colectados (con detalle E2EE explícito), datos NO
+  colectados, uso, cifrado en tránsito y reposo, derechos del usuario
+  (acceso/rectificación/borrado/portabilidad/revocación), retención,
+  protección de menores, permisos móviles, cambios a la política,
+  contacto.
+- **Tono:** internal corporate use case (Grupo Euromex) — no es un SaaS
+  multi-tenant, así que se aclara que solo empleados autorizados acceden
+  y los datos no se comparten con terceros.
+- **Pendiente al momento de esta entrada:** desplegar al VPS — el commit
+  `b1a4952` no se ha pulleado todavía. Verificar con
+  `ssh root@148.230.82.52 'cd /opt/euromex && git log --oneline -3'` y
+  hacer `git pull && systemctl restart euromex-web` si falta.
+
+### [2026-05-04] Release signing Android + iOS scaffold + guía publishing
+
+- **Contexto:** después de tener el APK debug funcional (Fase 23a) faltaba
+  el pipeline para producir un AAB **firmado y reproducible** apto para
+  Play Store, y el scaffold mínimo de iOS para no quedar bloqueados cuando
+  llegue ese momento.
+- **Android — release signing sin secrets en el repo:**
+  - [`android/app/build.gradle`](apps/mobile/android/app/build.gradle):
+    `signingConfigs.release` lee credenciales desde env vars
+    `EUROMEX_KEYSTORE_*`. Si las vars no están set o el keystore no
+    existe, **fallback al debug keystore con warning visible** — evita
+    que un build accidental produzca un AAB no firmable que pase silently.
+  - [`scripts/generate-keystore.sh`](apps/mobile/scripts/generate-keystore.sh):
+    interactivo, usa `keytool` del JDK de Android Studio, valida que no
+    exista uno previo (no sobrescribe), guía al usuario a hacer backup.
+    **Una sola vez por vida del proyecto** — si se pierde, no hay forma
+    de actualizar la app en Play Store.
+  - [`scripts/build-aab.sh`](apps/mobile/scripts/build-aab.sh): valida
+    env vars, sincroniza Capacitor, corre `./gradlew bundleRelease`,
+    copia el `.aab` a `apps/mobile/dist/` con SHA-256 al lado.
+- **iOS — scaffold completo (76 archivos):**
+  - `pnpm cap add ios` generó el proyecto Xcode (App.xcodeproj,
+    AppDelegate.swift, assets, storyboards, splash 2732×2732).
+  - [`SecurityPlugin.swift`](apps/mobile/ios/App/App/Security/SecurityPlugin.swift) +
+    [`.m`](apps/mobile/ios/App/App/Security/SecurityPlugin.m) — análogo iOS
+    del plugin Android. **iOS NO tiene FLAG_SECURE**, así que el plugin:
+    1. Detecta screenshots con `UIApplication.userDidTakeScreenshotNotification`
+       y emite evento `screenshotDetected` al JS (audit al backend).
+    2. Bloquea screen recording mostrando overlay negro mientras dura
+       (`UIScreen.capturedDidChangeNotification` + `isCaptured`).
+    3. Reporta `platformLimitations` al JS — transparencia con el caller
+       sobre qué SÍ se puede y qué no en iOS.
+  - **Pin a Capacitor v6** (`@capacitor/ios@^6.2.1`): la primera install
+    sin pin trajo v8 que rompía `pod install` por deployment target
+    incompatible con v6 del resto del stack.
+- **`PUBLISHING.md` (~400 líneas):** guía paso a paso para ambas tiendas:
+  cuentas (Play $25 una vez, Apple $99/año + D-U-N-S gratis pero ~5-15d),
+  keystore generation, build AAB, subida + listing, configuración Xcode
+  (`xcode-select`, CocoaPods), signing automático, Archive + Distribute
+  App, ficha App Store Connect, app review (credenciales demo),
+  bumping de `versionCode` para updates futuros.
+- **`.gitignore` endurecido:** ignora `*.keystore`, `*.jks`,
+  `key.properties`, `*.p12`, `*.mobileprovision`, `Pods/`,
+  `xcuserdata/`, `*.xcuserstate`. Un commit accidental no expone
+  la llave privada de release.
+- **Lo que SÍ requiere intervención manual** (no se puede automatizar
+  desde este repo): aceptar licencia de Xcode, `xcode-select -s`,
+  `xcodebuild -license accept`, agregar manualmente los archivos de
+  `Security/` al target en Xcode UI (la primera vez), correr
+  `generate-keystore.sh` una vez con backup. **Todo paso a paso en
+  PUBLISHING.md.**
+
+### [2026-05-04] Logo oficial Euromex aplicado al APK (icon + splash)
+
+- **Contexto:** el icono y splash genérico de Capacitor no debe ir a
+  Play Store. Necesitábamos generar todos los assets de Android
+  (5 densidades × 2 modos × landscape/portrait + adaptive icons) sin
+  hacerlo a mano.
+- **Decisión:** usar `@capacitor/assets` con dos imágenes source en
+  `apps/mobile/assets/`:
+  - `icon.png` — 1024×1024, wordmark Euromex sobre fondo institucional.
+  - `splash.png` — 1024×1024, mismo wordmark centrado para splash screen.
+- **Comando:** `pnpm exec capacitor-assets generate --android` →
+  87 assets generados (icons hdpi/mdpi/xhdpi/xxhdpi/xxxhdpi +
+  foreground/background adaptive + splash portrait/landscape ldpi-xxxhdpi
+  en light + dark mode).
+- **Validación:** `./gradlew assembleDebug` produce `app-debug.apk` de
+  4.6 MB con el icon oficial visible en el launcher del teléfono.
+- **devDeps añadidos a `@euromex/mobile`:** `sharp@0.34.5`,
+  `@capacitor/assets@3.0.5`.
+- **Para regenerar después de cambiar logo:** reemplazar
+  `apps/mobile/assets/icon.png` o `splash.png` y volver a correr
+  `pnpm exec capacitor-assets generate --android` (o `--ios` cuando se
+  active iOS). Capacitor sobrescribe los archivos derivados in-place.
+
+### [2026-05-03] Fase 25 — Editar y borrar mensajes con auditoría preservada
+
+- **Contexto:** items C1 (editar mensajes) y C2 (borrar mensajes) del
+  audit del 2026-05-03 — críticos para uso empresarial diario. Sin
+  esto, el único recurso ante un typo o info incorrecta era mandar
+  otro mensaje aclarando, lo cual genera ruido.
+- **Filosofía:** soft delete + edit history. Los usuarios regulares
+  ven el estado actual ("(editado)" o tombstone), pero el server
+  archiva los envelopes anteriores para auditoría forense en caso de
+  filtración.
+- **Limitación honesta del modelo E2EE:** solo descifran el histórico
+  los devices que estuvieron en la conversación al momento del edit
+  (los que recibieron sus envelopes originales). Coherente con el
+  modelo de seguridad actual y sin compromisos. Un admin que entra a
+  la conversación DESPUÉS de un edit no puede leer las versiones
+  archivadas — porque nunca tuvo la `recipientDeviceId` correspondiente.
+- **Schema (`migration 012-edit-delete-messages.sql`):**
+  - `messages` extendida con `edited_at`, `edit_count`, `deleted_at`,
+    `deleted_by` (FK users).
+  - Índice parcial `idx_messages_deleted` para tombstones eficientes.
+  - Tabla nueva `message_envelopes_history` `(message_id,
+    version_number, recipient_device, ciphertext, nonce, archived_at)`.
+    `version_number = edit_count + 1` al momento de archivar
+    (`1` = original).
+- **Backend ([`apps/api/src/chat/repo.ts`](apps/api/src/chat/repo.ts)):**
+  - `editMessage()` transaccional: valida sender, no-borrado, ventana
+    24h; archiva envelopes a `_history` con `version_number`; DELETE +
+    INSERT para reemplazar; UPDATE `edited_at` + `edit_count++`.
+  - `deleteMessage()`: solo el sender; SET `deleted_at` + `deleted_by`;
+    envelopes intactos para auditoría.
+  - `PATCH /messages/:id` y `DELETE /messages/:id` en
+    [`routes/conversations.ts`](apps/api/src/routes/conversations.ts).
+  - Socket events: `message:edited` (a cada DEVICE_ROOM con su envelope)
+    y `message:deleted` (a USER_ROOM de cada miembro).
+- **Frontend ([`apps/web/app/app/chat/page.tsx`](apps/web/app/app/chat/page.tsx)):**
+  - Hover icons en mensajes propios no borrados: Pencil (edit, solo
+    `text/plain` dentro de 24h), Trash (delete), Star (existente).
+  - Tombstone visual para deleted: "Borraste este mensaje" / "X
+    eliminó este mensaje" con icon trash y fondo muted.
+  - Indicador "editado ·" antes del timestamp si `editCount > 0`,
+    tooltip con hora del último edit.
+  - Composer en edit mode: banner amarillo "Editando mensaje" con X
+    para cancelar; send button cambia a Check (✓); Esc cancela.
+  - Modal de confirmación de borrado **transparente con el usuario**:
+    explica que el server archiva el contenido para auditoría.
+- **Audit log entries nuevos** (visibles en panel admin):
+  `message.edited` (`{messageId, conversationId, editCount}`),
+  `message.deleted` (`{messageId, conversationId}`).
+- **Alternativas descartadas:**
+  - Hard delete sin auditoría — incompatible con uso empresarial; el
+    sender podría borrar evidencia comprometedora sin trace.
+  - Edit unlimited en tiempo — la ventana de 24h limita la superficie
+    de "rewriting history" mientras permite la corrección razonable
+    de typos.
+  - Edit/delete para tipos no `text/plain` — descartado porque media
+    (imágenes, archivos) son referencias a blobs cifrados; "editar"
+    una imagen no tiene un significado obvio. Puede revisarse después.
 
 ### [2026-04-29] Fase 10 — Organigrama + perfil extendido
 

@@ -1,8 +1,8 @@
-package com.euromex.chat;
+package com.grupoeuromex.chat;
 
 import android.os.Bundle;
 
-import com.euromex.chat.security.SecurityPlugin;
+import com.grupoeuromex.chat.security.SecurityPlugin;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {

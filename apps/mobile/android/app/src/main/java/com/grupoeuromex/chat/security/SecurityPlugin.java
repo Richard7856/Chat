@@ -1,4 +1,4 @@
-package com.euromex.chat.security;
+package com.grupoeuromex.chat.security;
 
 import android.view.WindowManager;
 
