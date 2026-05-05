@@ -1,11 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import {
   AuthSuccessResponseSchema,
+  BeginTotpRotationRequestSchema,
+  ChangePasswordRequestSchema,
+  ConfirmTotpRotationRequestSchema,
   EnrollBeginRequestSchema,
   EnrollCompleteRequestSchema,
   LoginRequestSchema,
   ReauthRequestSchema,
   type AuthSuccessResponse,
+  type BeginTotpRotationResponse,
   type EnrollBeginResponse,
   type MeResponse,
 } from "@euromex/shared";
@@ -504,6 +508,226 @@ export async function authRoutes(app: FastifyInstance) {
           lastSeenAt: r.last_seen_at ? r.last_seen_at.toISOString() : null,
         },
       };
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // Fase 26 (C3) — POST /auth/password
+  //
+  // Cambia la password del usuario autenticado. Requiere:
+  //   - currentPassword (verificación argon2 contra hash en BD)
+  //   - newPassword (mínimo 12 chars, validado por PasswordSchema en shared)
+  //   - totpToken (segundo factor — evita que sesión robada cambie password)
+  //   - revokeOtherDevices (default true: revoca todos los demás devices del
+  //                          usuario para zero-trust en credential filtradas)
+  //
+  // Rate-limit handled at app-level (fastify-rate-limit ya está en /auth/*).
+  // --------------------------------------------------------------------------
+  app.post(
+    "/auth/password",
+    { preHandler: [requireAuth] },
+    async (req, reply) => {
+      const parsed = ChangePasswordRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
+      }
+      const { currentPassword, newPassword, totpToken, revokeOtherDevices } = parsed.data;
+      const userId = req.session!.sub;
+      const deviceId = req.session!.did;
+
+      const userRes = await pool.query<{
+        password_hash: string;
+        totp_secret_enc: Buffer;
+      }>(
+        "SELECT password_hash, totp_secret_enc FROM users WHERE id = $1",
+        [userId],
+      );
+      const user = userRes.rows[0];
+      if (!user) {
+        return reply.code(404).send({ error: "user_not_found" });
+      }
+
+      const passOk = await verifyPassword(user.password_hash, currentPassword);
+      if (!passOk) {
+        await audit(req, {
+          userId,
+          deviceId,
+          action: "password.change_failed",
+          metadata: { reason: "current_password_invalid" },
+        });
+        return reply.code(401).send({ error: "invalid_current_password" });
+      }
+
+      const totpSecret = decryptSecret(masterKey, user.totp_secret_enc).toString("utf8");
+      if (!verifyTotp(totpSecret, totpToken)) {
+        await audit(req, {
+          userId,
+          deviceId,
+          action: "password.change_failed",
+          metadata: { reason: "invalid_totp" },
+        });
+        return reply.code(401).send({ error: "invalid_totp" });
+      }
+
+      // Rechazar si la nueva es igual a la actual (mejor UX que dejarlo pasar
+      // y que el usuario crea que cambió algo).
+      const sameAsOld = await verifyPassword(user.password_hash, newPassword);
+      if (sameAsOld) {
+        return reply.code(400).send({ error: "same_as_current" });
+      }
+
+      const newHash = await hashPassword(newPassword);
+      await pool.query(
+        "UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2",
+        [newHash, userId],
+      );
+
+      let revokedCount = 0;
+      if (revokeOtherDevices) {
+        const r = await pool.query(
+          `UPDATE devices SET status = 'revoked', revoked_at = now()
+            WHERE user_id = $1 AND id <> $2 AND status = 'active'`,
+          [userId, deviceId],
+        );
+        revokedCount = r.rowCount ?? 0;
+      }
+
+      await audit(req, {
+        userId,
+        deviceId,
+        action: "password.changed",
+        metadata: { revokedDevices: revokedCount },
+      });
+
+      return reply.code(204).send();
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // Fase 26 (C4) — POST /auth/totp/begin
+  //
+  // Inicia rotación de 2FA. Requiere TOTP actual (prueba de posesión del
+  // device autenticador viejo). Genera nuevo secret + lo cifra + lo embebe
+  // en un JWT de 5 min. Devuelve el JWT, el otpauth URI y el QR PNG.
+  //
+  // El secret nuevo NUNCA toca BD hasta que el usuario llame /auth/totp/confirm.
+  // --------------------------------------------------------------------------
+  app.post(
+    "/auth/totp/begin",
+    { preHandler: [requireAuth] },
+    async (req, reply): Promise<BeginTotpRotationResponse> => {
+      const parsed = BeginTotpRotationRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
+      }
+      const { totpToken } = parsed.data;
+      const userId = req.session!.sub;
+
+      const userRes = await pool.query<{
+        username: string;
+        totp_secret_enc: Buffer;
+      }>(
+        "SELECT username, totp_secret_enc FROM users WHERE id = $1",
+        [userId],
+      );
+      const user = userRes.rows[0];
+      if (!user) return reply.code(404).send({ error: "user_not_found" });
+
+      const oldSecret = decryptSecret(masterKey, user.totp_secret_enc).toString("utf8");
+      if (!verifyTotp(oldSecret, totpToken)) {
+        await audit(req, {
+          userId,
+          deviceId: req.session!.did,
+          action: "totp.rotate_begin_failed",
+          metadata: { reason: "invalid_current_totp" },
+        });
+        return reply.code(401).send({ error: "invalid_current_totp" });
+      }
+
+      const enrollment = await createTotpEnrollment(user.username);
+      // Embebemos el secret nuevo cifrado dentro del rotation token. Así no
+      // necesitamos almacenamiento intermedio (Redis / tabla temp); basta
+      // con que el cliente devuelva el token al confirmar.
+      const encNewSecret = encryptSecret(masterKey, enrollment.secret).toString("base64");
+      // app.jwt.sign tipa el payload contra SessionClaims (auth/jwt.ts), pero
+      // este token es un JWT diferente con su propio shape. Casteamos vía
+      // unknown — el verify del lado opuesto valida claims.t === "totp-rotate"
+      // antes de usarlo como rotation token.
+      const rotationToken = app.jwt.sign(
+        { t: "totp-rotate", sub: userId, ns: encNewSecret } as unknown as SessionClaims,
+        { expiresIn: "5m" },
+      );
+
+      const qrBase64 = enrollment.qrDataUrl.replace(/^data:image\/png;base64,/, "");
+
+      return {
+        rotationToken,
+        otpauthUri: enrollment.uri,
+        qrPngBase64: qrBase64,
+      };
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // Fase 26 (C4) — POST /auth/totp/confirm
+  //
+  // Confirma rotación: el usuario ya escaneó el nuevo QR en su autenticador
+  // y manda el código actual del NUEVO secret. Si valida, persistimos el
+  // nuevo secret cifrado en BD reemplazando el viejo.
+  // --------------------------------------------------------------------------
+  app.post(
+    "/auth/totp/confirm",
+    { preHandler: [requireAuth] },
+    async (req, reply) => {
+      const parsed = ConfirmTotpRotationRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
+      }
+      const { rotationToken, totpToken } = parsed.data;
+      const userId = req.session!.sub;
+
+      let claims: { t: string; sub: string; ns: string };
+      try {
+        claims = app.jwt.verify(rotationToken) as { t: string; sub: string; ns: string };
+      } catch {
+        return reply.code(401).send({ error: "invalid_rotation_token" });
+      }
+
+      if (claims.t !== "totp-rotate" || claims.sub !== userId) {
+        return reply.code(401).send({ error: "invalid_rotation_token" });
+      }
+
+      let newSecret: string;
+      try {
+        newSecret = decryptSecret(masterKey, Buffer.from(claims.ns, "base64")).toString("utf8");
+      } catch {
+        return reply.code(401).send({ error: "invalid_rotation_token" });
+      }
+
+      if (!verifyTotp(newSecret, totpToken)) {
+        await audit(req, {
+          userId,
+          deviceId: req.session!.did,
+          action: "totp.rotate_confirm_failed",
+          metadata: { reason: "invalid_new_totp" },
+        });
+        return reply.code(401).send({ error: "invalid_new_totp" });
+      }
+
+      const newEnc = encryptSecret(masterKey, newSecret);
+      await pool.query(
+        "UPDATE users SET totp_secret_enc = $1, updated_at = now() WHERE id = $2",
+        [newEnc, userId],
+      );
+
+      await audit(req, {
+        userId,
+        deviceId: req.session!.did,
+        action: "totp.rotated",
+        metadata: {},
+      });
+
+      return reply.code(204).send();
     },
   );
 

@@ -20,6 +20,7 @@ import {
   Plus,
   Search,
   Send,
+  Settings,
   ShieldCheck,
   Sparkles,
   Star,
@@ -64,6 +65,7 @@ import { SecurityBanner } from "../../components/security-banner";
 import { Watermark } from "../../components/watermark";
 import { MediaPanel } from "../../components/media-panel";
 import { AttachmentOptionsModal } from "../../components/attachment-options-modal";
+import { SettingsModal } from "../../components/settings-modal";
 import { ActivityCard } from "../../components/activity-card";
 import { TaskCard } from "../../components/task-card";
 import { CreateActivityModal } from "../../components/create-activity-modal";
@@ -146,6 +148,8 @@ export default function ChatPage() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   // confirmDeleteId !== null: hay un modal abierto preguntando si borrar.
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  // Fase 26 — settings modal (cambiar password, rotar 2FA).
+  const [showSettings, setShowSettings] = useState(false);
   const [showDocsPanel, setShowDocsPanel] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [showActivityModal, setShowActivityModal] = useState(false);
@@ -1171,6 +1175,14 @@ export default function ChatPage() {
           <Button
             variant="ghost"
             size="icon"
+            onClick={() => setShowSettings(true)}
+            title="Mi cuenta (contraseña / 2FA)"
+          >
+            <Settings className="size-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
             onClick={onLogout}
             title="Cerrar sesión"
           >
@@ -1840,6 +1852,12 @@ export default function ChatPage() {
           await refreshConversations();
           setSelectedId(convId);
         }}
+      />
+
+      {/* Fase 26: Mi cuenta (cambiar password + rotar 2FA) */}
+      <SettingsModal
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
       />
 
       {/* Fase 25: Confirmación de borrado de mensaje */}

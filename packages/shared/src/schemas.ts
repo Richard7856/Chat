@@ -152,6 +152,65 @@ export const ReauthRequestSchema = z.object({
 });
 export type ReauthRequest = z.infer<typeof ReauthRequestSchema>;
 
+/**
+ * Fase 26 (C3) — el usuario cambia su propia password.
+ *
+ * Requiere TOTP además del password actual para evitar que un atacante
+ * con sesión robada pueda cambiar credenciales desde un device autorizado.
+ *
+ * Si revokeOtherDevices=true (recomendado), todos los devices del usuario
+ * EXCEPTO el actual son revocados (zero-trust en credentials filtradas).
+ */
+export const ChangePasswordRequestSchema = z.object({
+  currentPassword: PasswordSchema,
+  newPassword: PasswordSchema,
+  totpToken: TotpTokenSchema,
+  revokeOtherDevices: z.boolean().default(true),
+});
+export type ChangePasswordRequest = z.infer<typeof ChangePasswordRequestSchema>;
+
+/**
+ * Fase 26 (C4) — rotación de 2FA. Flujo de dos pasos:
+ *
+ *  1) POST /auth/totp/begin con totpToken actual:
+ *     server genera nuevo secret, lo cifra con master key + lo embebe en
+ *     un JWT corto (5 min). Devuelve QR + JWT al cliente.
+ *
+ *  2) POST /auth/totp/confirm con jwt + totpToken (calculado desde el
+ *     nuevo secret en la app autenticadora del usuario):
+ *     server descifra el secret del JWT, valida totpToken contra él,
+ *     persiste el nuevo secret en BD reemplazando el viejo.
+ *
+ * Esto garantiza que el secret nuevo NUNCA pasa por base de datos hasta
+ * que el usuario demuestra que lo configuró bien en su autenticador.
+ */
+export const BeginTotpRotationRequestSchema = z.object({
+  totpToken: TotpTokenSchema, // del secret VIEJO
+});
+export type BeginTotpRotationRequest = z.infer<
+  typeof BeginTotpRotationRequestSchema
+>;
+
+export const BeginTotpRotationResponseSchema = z.object({
+  /** JWT corto que envuelve el nuevo secret cifrado. Lo manda al server en confirm. */
+  rotationToken: z.string(),
+  /** otpauth:// URI para que el cliente arme su propio QR si no quiere el PNG. */
+  otpauthUri: z.string(),
+  /** PNG base64 del QR para enseñar al usuario directamente. */
+  qrPngBase64: z.string(),
+});
+export type BeginTotpRotationResponse = z.infer<
+  typeof BeginTotpRotationResponseSchema
+>;
+
+export const ConfirmTotpRotationRequestSchema = z.object({
+  rotationToken: z.string(),
+  totpToken: TotpTokenSchema, // calculado desde el secret NUEVO
+});
+export type ConfirmTotpRotationRequest = z.infer<
+  typeof ConfirmTotpRotationRequestSchema
+>;
+
 export const MeResponseSchema = z.object({
   user: z.object({
     id: z.string().uuid(),
