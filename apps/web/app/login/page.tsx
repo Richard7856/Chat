@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   ArrowRight,
   ChevronRight,
+  Fingerprint,
   Loader2,
   LogIn,
   ShieldCheck,
@@ -21,6 +22,12 @@ import {
 } from "../lib/api";
 import { ensureDeviceKeypair } from "../lib/keys";
 import { loadKeypair } from "../lib/keys";
+import {
+  clearBiometricUnlock,
+  hasLocalBiometricFlag,
+  isBiometricAvailable,
+  unlockWithBiometric,
+} from "../lib/biometric";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -37,7 +44,10 @@ interface AuthSuccess {
   };
 }
 
-type LoginMode = "loading" | "quick" | "full";
+// Fase 27: 'biometric' es una variante del modo "quick" — tenemos device
+// hint + keypair + biometría activada. La pantalla muestra el botón huella
+// como acción primaria; "Usar TOTP" hace fallback al modo quick clásico.
+type LoginMode = "loading" | "biometric" | "quick" | "full";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -58,6 +68,8 @@ export default function LoginPage() {
 
   // Al montar: detectar si hay un device hint + keypair guardados en
   // localStorage. Si ambos existen, el usuario puede entrar solo con TOTP.
+  // Fase 27: si además hay biometría enrolada y el usuario activó "iniciar
+  // con huella" en este device, mostramos el modo biométrico como primario.
   useEffect(() => {
     (async () => {
       const h = loadDeviceHint();
@@ -65,7 +77,12 @@ export default function LoginPage() {
         const kp = await loadKeypair(h.deviceId);
         if (kp) {
           setHint(h);
-          setMode("quick");
+          // Solo entramos a "biometric" si: (a) flag local dice que está
+          // activado, y (b) realmente hay sensor + huella enrolada. Si la
+          // huella se borró del sistema, el flag aún diría "1" y el unlock
+          // fallaría — por eso comprobamos availability también.
+          const useBio = hasLocalBiometricFlag() && (await isBiometricAvailable());
+          setMode(useBio ? "biometric" : "quick");
           return;
         }
         // Hay hint pero el keypair fue limpiado — borramos el hint huérfano
@@ -74,6 +91,51 @@ export default function LoginPage() {
       setMode("full");
     })();
   }, []);
+
+  // --------------------------------------------------------------------------
+  // Fase 27 — Flujo biométrico
+  // --------------------------------------------------------------------------
+  async function onBiometricUnlock() {
+    if (!hint) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      const unlocked = await unlockWithBiometric();
+      if (!unlocked) {
+        // El usuario canceló o el prompt falló — no es error fatal,
+        // dejamos el botón listo para reintentar.
+        return;
+      }
+      const res = await api<AuthSuccess>("/auth/biometric/unlock", {
+        body: { biometricToken: unlocked.token },
+      });
+      saveSession(res);
+      await ensureDeviceKeypair(res.device.id);
+      router.push("/app/chat");
+    } catch (err) {
+      const code = err instanceof Error ? err.message : "error";
+      if (code === "biometric_revoked" || code === "invalid_biometric_token") {
+        // El token guardado ya no sirve (admin revocó device, usuario
+        // desactivó biometría desde otro device, o JWT expiró). Limpiamos
+        // y caemos al modo TOTP — el hint sigue vivo.
+        await clearBiometricUnlock();
+        setMode("quick");
+        setError(
+          "La autenticación biométrica fue revocada. Ingresa tu código 2FA.",
+        );
+      } else if (code === "session_revoked") {
+        await clearBiometricUnlock();
+        clearDeviceHint();
+        setHint(null);
+        setMode("full");
+        setError("Tu sesión fue revocada. Inicia sesión de nuevo.");
+      } else {
+        setError(humanizeError(code));
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   // --------------------------------------------------------------------------
   // Flujo rápido — solo TOTP, mismo deviceId
@@ -171,6 +233,69 @@ export default function LoginPage() {
 
         {/* Form card */}
         <div className="rounded-2xl border border-border bg-card p-6 shadow-xl shadow-black/5 animate-slide-up">
+
+          {/* ---------------------------------------------------------------- */}
+          {/* Fase 27 — Modo biométrico (solo en APK con huella activada)      */}
+          {/* ---------------------------------------------------------------- */}
+          {mode === "biometric" && hint && (
+            <>
+              <div className="mb-6">
+                <h2 className="mb-1 text-lg font-semibold">Bienvenido de nuevo</h2>
+                <p className="text-sm text-muted-foreground">
+                  Confirma con tu huella o Face ID para entrar.
+                </p>
+              </div>
+
+              <div className="mb-5 flex items-center gap-3 rounded-xl border border-border bg-muted/40 px-4 py-3">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary font-semibold text-sm">
+                  {hint.displayName.charAt(0).toUpperCase()}
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{hint.displayName}</p>
+                  <p className="text-xs text-muted-foreground">@{hint.username}</p>
+                </div>
+              </div>
+
+              {error && (
+                <Alert variant="destructive" className="mb-4">
+                  <AlertTriangle className="size-4" />
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+
+              <Button
+                type="button"
+                onClick={onBiometricUnlock}
+                disabled={submitting}
+                className="w-full"
+                size="lg"
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="size-4 animate-spin" />
+                    Verificando…
+                  </>
+                ) : (
+                  <>
+                    <Fingerprint className="size-5" />
+                    Entrar con huella / Face ID
+                  </>
+                )}
+              </Button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setMode("quick");
+                  setError(null);
+                }}
+                className="mt-4 flex w-full items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <ChevronRight className="size-3.5" />
+                Usar código 2FA
+              </button>
+            </>
+          )}
 
           {/* ---------------------------------------------------------------- */}
           {/* Modo rápido: solo TOTP                                           */}

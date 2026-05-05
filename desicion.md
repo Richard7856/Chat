@@ -123,13 +123,14 @@ sudo systemctl start euromex-backup.service
 
 ## Estado actual
 
-- **Fase:** 26 (última completada) — Sprint del audit 2026-05-03 cerrado:
-  C1+C2 (editar/borrar mensajes), C3+C4 (cambio password + rotación TOTP),
-  I4 (paginación scroll-up), I5 (vista semanal del calendario, polish).
+- **Fase:** 27 (última completada) — Biometric UX en mobile (huella / Face ID):
+  login con huella + step-up biométrico para acciones admin sensibles.
+  Sprint del audit 2026-05-03 cerrado en Fase 26 (C1-C4, I4, I5 polish).
 - **Estado:** producción corriendo. Mobile: APK debug + release signing
   listos, iOS scaffold + privacy policy publicados, package renombrado a
   `com.grupoeuromex.chat`. **Pendiente desplegar al VPS** los commits del
-  2026-05-04 al 2026-05-05 (rename, privacy policy, C3+C4, I4, I5 polish).
+  2026-05-04 al 2026-05-05 (rename, privacy policy, C3+C4, I4, I5 polish,
+  Fase 27 biometric — incluye `migration 013` que debe aplicarse a mano).
 - **Última actualización:** 2026-05-05
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
   ⚠️ El VPS debe estar en esta rama: `git checkout claude/private-chat-mac-auth-e9QYn`
@@ -223,6 +224,108 @@ pendiente de aprobación de directivos de Euromex. **Cutover es ~3 comandos de
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-05-05] Fase 27 — Biometric UX en mobile (huella / Face ID)
+
+- **Contexto:** la empresa garantiza que todos los empleados tienen acceso
+  a un mobile con biometría enrolada. Petición: poder iniciar sesión con
+  huella en lugar de TOTP, y proteger acciones admin sensibles con huella.
+  La idea de "autorizar capturas con huella" se descartó conscientemente
+  para no abrir agujeros en la garantía de FLAG_SECURE.
+- **Decisión clave (importante para auditores futuros):** la biometría
+  **NO reemplaza al TOTP de manera criptográfica**. El servidor nunca ve
+  la huella — es un *unlock local* del refresh-equivalente guardado en
+  Keystore/Keychain. El TOTP sigue siendo necesario:
+  - Al activar la conveniencia (segundo factor del opt-in).
+  - Al re-loguear en un device nuevo o tras logout total.
+  - Al re-loguear si la biometría fue revocada por el server o por el propio
+    usuario en otro device.
+- **Backend ([`apps/api`](apps/api)):**
+  - `migration 013-biometric-unlock.sql`: agrega `biometric_enabled`
+    (BOOLEAN per-device) + `biometric_token_jti` (TEXT) a `devices`.
+  - `POST /auth/biometric/enable` (auth + TOTP): genera un JWT firmado
+    `{ sub, did, type:'biometric_unlock', jti }` con TTL 90 días, persiste
+    el JTI. Devuelve `{ biometricToken, expiresInSec }`.
+  - `POST /auth/biometric/unlock` (no auth): valida JWT + compara JTI con
+    el de DB. **Cualquier diferencia de JTI = token revocado** (rotación
+    instantánea sin esperar a que expire).
+  - `POST /auth/biometric/disable` (auth): borra JTI + flag.
+  - Audit log: `biometric.enabled`, `biometric.disabled`,
+    `biometric.unlock` (con `metadata.authMethod='biometric'`),
+    `biometric.unlock_revoked`, `biometric.enable_failed`.
+- **Plugin elegido — `capacitor-native-biometric@^4.2.2`:**
+  - Combina prompt biométrico (`verifyIdentity`) + storage cifrado con
+    biometría (`setCredentials`/`getCredentials`/`deleteCredentials`).
+  - En Android usa `BiometricPrompt` + `KeyGenParameterSpec` con
+    `setUserAuthenticationRequired(true)`. En iOS usa
+    `LocalAuthentication` + Keychain con `kSecAccessControlBiometryAny`.
+  - Alternativas evaluadas:
+    - `@aparajita/capacitor-biometric-auth`: solo prompt, sin storage. No
+      cubre el caso completo.
+    - `@capacitor-community/biometric-auth`: similar al anterior, deprecado.
+- **Wrapper TS ([`apps/web/app/lib/biometric.ts`](apps/web/app/lib/biometric.ts)):**
+  - `isBiometricAvailable()` — feature-detection con `Capacitor.isNativePlatform()`
+    + el plugin's `isAvailable`. Cached por sesión. Devuelve `false` en web
+    sin tirar errores → todo el módulo es no-op fuera de APK.
+  - `enableBiometricUnlock(token, username)` — guarda el JWT en Keystore
+    cifrado con biometría. El username se guarda solo para el UI.
+  - `unlockWithBiometric()` — trigger prompt → recupera token. Devuelve
+    `null` si el usuario cancela (no throw).
+  - `clearBiometricUnlock()` — borra del Keystore + flag local.
+  - `verifyBiometric(reason)` — step-up sin tocar storage. Devuelve `bool`.
+  - `hasLocalBiometricFlag()` — lectura sincrónica de localStorage para
+    decidir qué pantalla de login mostrar al abrir la app.
+- **Frontend — login ([`apps/web/app/login/page.tsx`](apps/web/app/login/page.tsx)):**
+  - Nuevo `LoginMode = 'loading' | 'biometric' | 'quick' | 'full'`.
+  - Si en este device hay device hint + keypair + flag local + biometría
+    disponible → arranca en modo `'biometric'` con botón grande "Entrar
+    con huella / Face ID".
+  - Errores `biometric_revoked` o `invalid_biometric_token` → fallback a
+    `quick` (TOTP) con mensaje explicativo + cleanup del Keystore.
+  - Botón "Usar código 2FA" siempre disponible para fallback voluntario.
+- **Frontend — settings ([`apps/web/app/components/settings-modal.tsx`](apps/web/app/components/settings-modal.tsx)):**
+  - Tab nuevo "Huella / Face ID" (solo aparece si `isBiometricAvailable()`).
+  - Activar requiere TOTP + un prompt biométrico de confirmación (el primer
+    `setCredentials` triggea el prompt nativo "confirma para guardar").
+  - Desactivar es un click — el server borra JTI, el cliente borra Keystore.
+- **Frontend — step-up admin (acciones sensibles):**
+  - Plumbed en 2 sitios para esta sesión:
+    1. [`user-devices-modal.tsx`](apps/web/app/app/admin/user-devices-modal.tsx) — `handleRevoke`:
+       prompt biométrico antes de revocar device de otro usuario.
+    2. [`users-tab.tsx`](apps/web/app/app/admin/users-tab.tsx) — `patch()`:
+       prompt biométrico cuando el payload contiene `role` o `status`
+       (cambio de rol o disable user).
+  - **No es seguridad nueva del server** — el server sigue verificando
+    admin role en cada PATCH. Es confirmación de presencia física en el
+    device, registrada en audit log si el usuario quisiera correlacionar.
+  - Pendiente para iteración siguiente: extender al toggle de
+    `receives_security_alerts`, edición de permisos granulares, y
+    administración de invitaciones.
+- **Riesgos / consecuencias:**
+  - Si el usuario limpia datos de la app pero el Keystore sobrevive (raro
+    en Android, posible en iOS), el flag local dirá `false` pero el
+    Keystore tendrá un secret huérfano. El siguiente `enable` lo
+    sobreescribe — no hay leak.
+  - El JWT vive 90 días. Si un atacante físico roba el device y consigue
+    pasar la huella (clonado de huella es impráctico pero no imposible),
+    tiene la session por 90 días. Mitigación: el admin puede revocar el
+    device (POST /admin/devices/:id/revoke), lo cual rota `device_status`
+    a `revoked` → unlock devuelve `session_revoked`.
+  - Sin biometría enrolada en el sistema operativo, el `enable` falla
+    con `biometric_unavailable`. El usuario debe enrolar primero en
+    Settings de su Android/iOS.
+- **Pasos manuales tras pull (importante para deploy):**
+  1. Aplicar migration 013:
+     `docker exec -i euromex-postgres psql -U $POSTGRES_USER -d $POSTGRES_DB
+       < apps/api/src/db/migrations/013-biometric-unlock.sql`
+  2. `pnpm install` en raíz.
+  3. Build web + restart services.
+  4. Mobile: `cd apps/mobile && pnpm cap sync android` para registrar el
+     plugin nativo en el proyecto Android (genera entrada en
+     `MainActivity.java` + Gradle deps).
+  5. Rebuild APK: `pnpm build:android:debug`.
+  6. **iOS no se setupea en esta iteración** — el plugin tiene podspec
+     pero falta wire-up en Xcode (PUBLISHING.md sección B.7+ aplica).
 
 ### [2026-05-05] Cierre del sprint del audit 2026-05-03 — I4 (scroll-up) + I5 (vista semanal, polish)
 

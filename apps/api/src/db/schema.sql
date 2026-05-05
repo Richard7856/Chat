@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS devices (
   last_seen_at          TIMESTAMPTZ,
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   revoked_at            TIMESTAMPTZ,
+  -- Fase 27 — biometric unlock per device (ver migrations/013).
+  biometric_enabled     BOOLEAN NOT NULL DEFAULT false,
+  biometric_token_jti   TEXT,
   UNIQUE (user_id, registration_id)
 );
 

@@ -211,6 +211,34 @@ export type ConfirmTotpRotationRequest = z.infer<
   typeof ConfirmTotpRotationRequestSchema
 >;
 
+// ─── Fase 27 — Biometric unlock (per-device) ──────────────────────────────────
+//
+// Patrón: el server emite un biometric_unlock_token (JWT con ttl largo) que el
+// cliente guarda cifrado con biometría en Keystore/Keychain. Al desbloquear
+// con huella, el cliente lo recupera y lo manda a /auth/biometric/unlock para
+// obtener una session normal. El TOTP se pide en /enable como segundo factor
+// de la operación que activa la conveniencia (no del unlock posterior).
+
+export const EnableBiometricRequestSchema = z.object({
+  totpToken: TotpTokenSchema,
+});
+export type EnableBiometricRequest = z.infer<typeof EnableBiometricRequestSchema>;
+
+export const EnableBiometricResponseSchema = z.object({
+  /** JWT firmado por el server. El cliente DEBE guardarlo en Keystore/Keychain
+   *  cifrado con biometría — nunca en localStorage plano. */
+  biometricToken: z.string(),
+  /** Mismo TTL que el JWT, en segundos, para que el cliente pueda mostrar
+   *  cuándo expira si quiere. */
+  expiresInSec: z.number().int().positive(),
+});
+export type EnableBiometricResponse = z.infer<typeof EnableBiometricResponseSchema>;
+
+export const BiometricUnlockRequestSchema = z.object({
+  biometricToken: z.string(),
+});
+export type BiometricUnlockRequest = z.infer<typeof BiometricUnlockRequestSchema>;
+
 export const MeResponseSchema = z.object({
   user: z.object({
     id: z.string().uuid(),

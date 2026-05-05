@@ -2,17 +2,21 @@ import type { FastifyInstance } from "fastify";
 import {
   AuthSuccessResponseSchema,
   BeginTotpRotationRequestSchema,
+  BiometricUnlockRequestSchema,
   ChangePasswordRequestSchema,
   ConfirmTotpRotationRequestSchema,
+  EnableBiometricRequestSchema,
   EnrollBeginRequestSchema,
   EnrollCompleteRequestSchema,
   LoginRequestSchema,
   ReauthRequestSchema,
   type AuthSuccessResponse,
   type BeginTotpRotationResponse,
+  type EnableBiometricResponse,
   type EnrollBeginResponse,
   type MeResponse,
 } from "@euromex/shared";
+import { randomUUID } from "crypto";
 import { pool } from "../db/pg.js";
 import {
   hashPassword,
@@ -747,6 +751,196 @@ export async function authRoutes(app: FastifyInstance) {
         userId: req.session!.sub,
         deviceId: req.session!.did,
         action: "logout",
+      });
+      return reply.code(204).send();
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // FASE 27 — Biometric unlock (per-device)
+  //
+  // Modelo: el server emite un biometric_unlock_token (JWT, ttl 90d) cuando el
+  // usuario activa la conveniencia. El cliente lo guarda cifrado con biometría
+  // en Keystore (Android) / Keychain (iOS). Al re-loguear con huella, el
+  // cliente desbloquea el JWT y lo cambia por una session normal vía
+  // /auth/biometric/unlock.
+  //
+  // El TOTP NO se elimina: se pide una vez al activar (segundo factor del
+  // opt-in) y vuelve a ser obligatorio si el usuario hace logout total o
+  // pierde el device. La biometría es un atajo de UX, no un reemplazo del
+  // modelo de auth.
+  //
+  // Revocación instantánea: cualquier disable o re-enable rota el JTI; el
+  // JWT viejo deja de servir aunque el cliente todavía lo tenga en Keystore.
+  // --------------------------------------------------------------------------
+
+  const BIOMETRIC_TOKEN_TTL_SEC = 60 * 60 * 24 * 90; // 90 días
+
+  // POST /auth/biometric/enable — activar biometric unlock para este device.
+  // Requiere: session activa + TOTP (segundo factor del opt-in).
+  app.post(
+    "/auth/biometric/enable",
+    { preHandler: [requireAuth] },
+    async (req, reply): Promise<EnableBiometricResponse> => {
+      const parsed = EnableBiometricRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply
+          .code(400)
+          .send({ error: "invalid_body", issues: parsed.error.issues });
+      }
+
+      const userId = req.session!.sub;
+      const deviceId = req.session!.did;
+
+      const r = await pool.query<{ totp_secret_enc: Buffer }>(
+        `SELECT totp_secret_enc FROM users WHERE id = $1`,
+        [userId],
+      );
+      const row = r.rows[0];
+      if (!row) {
+        return reply.code(401).send({ error: "session_revoked" });
+      }
+
+      const totpSecret = decryptSecret(masterKey, row.totp_secret_enc).toString("utf8");
+      if (!verifyTotp(totpSecret, parsed.data.totpToken)) {
+        await audit(req, {
+          userId,
+          deviceId,
+          action: "biometric.enable_failed",
+          metadata: { reason: "invalid_totp" },
+        });
+        return reply.code(401).send({ error: "invalid_totp" });
+      }
+
+      const jti = randomUUID();
+      // JWT firmado con la misma master secret del Fastify JWT plugin.
+      // type discrimina contra session tokens normales — el unlock endpoint
+      // RECHAZA cualquier JWT que no diga type === 'biometric_unlock'.
+      const biometricToken = app.jwt.sign(
+        { sub: userId, did: deviceId, type: "biometric_unlock", jti } as unknown as SessionClaims,
+        { expiresIn: BIOMETRIC_TOKEN_TTL_SEC },
+      );
+
+      await pool.query(
+        `UPDATE devices SET biometric_enabled = true, biometric_token_jti = $1
+          WHERE id = $2`,
+        [jti, deviceId],
+      );
+
+      await audit(req, {
+        userId,
+        deviceId,
+        action: "biometric.enabled",
+      });
+
+      return {
+        biometricToken,
+        expiresInSec: BIOMETRIC_TOKEN_TTL_SEC,
+      };
+    },
+  );
+
+  // POST /auth/biometric/unlock — login con huella.
+  // NO requiere session previa; el biometricToken ES la prueba.
+  // El cliente lo desbloqueó del Keystore después del prompt biométrico.
+  app.post("/auth/biometric/unlock", async (req, reply): Promise<AuthSuccessResponse> => {
+    const parsed = BiometricUnlockRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: "invalid_body", issues: parsed.error.issues });
+    }
+
+    let claims: { sub: string; did: string; type?: string; jti?: string };
+    try {
+      claims = app.jwt.verify(parsed.data.biometricToken) as typeof claims;
+    } catch {
+      return reply.code(401).send({ error: "invalid_biometric_token" });
+    }
+    if (claims.type !== "biometric_unlock" || !claims.jti) {
+      return reply.code(401).send({ error: "invalid_biometric_token" });
+    }
+
+    const r = await pool.query<{
+      user_id: string;
+      device_id: string;
+      username: string;
+      display_name: string;
+      role: "user" | "admin";
+      user_status: string;
+      device_status: string;
+      device_name: string;
+      platform: string;
+      biometric_enabled: boolean;
+      biometric_token_jti: string | null;
+    }>(
+      `SELECT u.id AS user_id, d.id AS device_id, u.username, u.display_name,
+              u.role, u.status AS user_status, d.status AS device_status,
+              d.device_name, d.platform, d.biometric_enabled, d.biometric_token_jti
+         FROM devices d
+         JOIN users u ON u.id = d.user_id
+        WHERE d.id = $1 AND u.id = $2`,
+      [claims.did, claims.sub],
+    );
+    const row = r.rows[0];
+    if (!row || row.user_status !== "active" || row.device_status !== "active") {
+      return reply.code(401).send({ error: "session_revoked" });
+    }
+
+    // Comparación crítica: el JTI almacenado es el ÚNICO válido. Si el
+    // usuario desactivó/reactivó, o el admin revocó la sesión, el JTI cambió
+    // o se borró → el JWT viejo debe rechazarse aunque su firma siga buena.
+    if (!row.biometric_enabled || row.biometric_token_jti !== claims.jti) {
+      await audit(req, {
+        userId: row.user_id,
+        deviceId: row.device_id,
+        action: "biometric.unlock_revoked",
+      });
+      return reply.code(401).send({ error: "biometric_revoked" });
+    }
+
+    await audit(req, {
+      userId: row.user_id,
+      deviceId: row.device_id,
+      action: "biometric.unlock",
+      metadata: { authMethod: "biometric", platform: row.platform },
+    });
+
+    const token = app.jwt.sign({
+      sub: row.user_id,
+      did: row.device_id,
+      role: row.role,
+    });
+    return await buildAuthResponse(
+      token,
+      {
+        id: row.user_id,
+        username: row.username,
+        display_name: row.display_name,
+        role: row.role,
+      },
+      { id: row.device_id, device_name: row.device_name, platform: row.platform },
+    );
+  });
+
+  // POST /auth/biometric/disable — desactivar biometric unlock para este
+  // device. NO se pide TOTP — bajar la conveniencia es siempre menos
+  // sensible que activarla. El JTI se borra → cualquier JWT viejo en
+  // Keystore queda inservible inmediatamente.
+  app.post(
+    "/auth/biometric/disable",
+    { preHandler: [requireAuth] },
+    async (req, reply) => {
+      await pool.query(
+        `UPDATE devices
+            SET biometric_enabled = false, biometric_token_jti = NULL
+          WHERE id = $1`,
+        [req.session!.did],
+      );
+      await audit(req, {
+        userId: req.session!.sub,
+        deviceId: req.session!.did,
+        action: "biometric.disabled",
       });
       return reply.code(204).send();
     },

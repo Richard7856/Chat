@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type { AdminDeviceItem } from "@euromex/shared";
 import { api } from "../../lib/api";
+import { isBiometricAvailable, verifyBiometric } from "../../lib/biometric";
 import { Button } from "../../components/ui/button";
 import {
   Dialog,
@@ -131,7 +132,21 @@ export function UserDevicesModal({ user, onClose, onRevoked }: Props) {
   async function handleRevoke(device: AdminDeviceItem) {
     setRevoking(device.id);
     setError(null);
+    // Fase 27 — step-up biométrico en mobile. La acción es destructiva
+    // (irreversible para la sesión activa del peer). En web no hay sensor
+    // → proseguimos normal. Este step-up NO sustituye al check server-side
+    // de admin role; es solo confirmación de presencia física.
     try {
+      if (await isBiometricAvailable()) {
+        const ok = await verifyBiometric(
+          `Revocar el dispositivo "${device.deviceName}" de ${user?.displayName ?? "este usuario"}`,
+        );
+        if (!ok) {
+          setError("Confirmación biométrica cancelada.");
+          setRevoking(null);
+          return;
+        }
+      }
       await api(`/admin/devices/${device.id}/revoke`, {
         method: "POST",
         auth: true,

@@ -13,6 +13,7 @@ import type {
   AdminUserUpdateRequest,
 } from "@euromex/shared";
 import { api } from "../../lib/api";
+import { isBiometricAvailable, verifyBiometric } from "../../lib/biometric";
 import { Avatar } from "../../components/ui/avatar";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -76,9 +77,27 @@ export function UsersTab({
   }, [refresh]);
 
   /** Aplica un patch parcial a un usuario (rol, status, alertas, etc.).
-   *  No se usa para displayName/email — esos van por saveEdit(). */
+   *  No se usa para displayName/email — esos van por saveEdit().
+   *
+   *  Fase 27: cambios de rol o de status (active ↔ disabled) son acciones
+   *  destructivas → step-up biométrico en mobile antes de pegar al server.
+   *  El check de admin role lo sigue haciendo el server. */
   async function patch(userId: string, payload: AdminUserUpdateRequest) {
     onError(null);
+    const sensitive =
+      "role" in payload || "status" in payload;
+    if (sensitive && (await isBiometricAvailable())) {
+      const target = users.find((u) => u.id === userId);
+      const reason =
+        "status" in payload
+          ? `${payload.status === "disabled" ? "Deshabilitar" : "Activar"} a ${target?.displayName ?? "usuario"}`
+          : `Cambiar rol de ${target?.displayName ?? "usuario"}`;
+      const ok = await verifyBiometric(reason);
+      if (!ok) {
+        onError("Confirmación biométrica cancelada.");
+        return;
+      }
+    }
     setBusy(userId);
     try {
       const updated = await api<AdminUserListItem>(`/admin/users/${userId}`, {

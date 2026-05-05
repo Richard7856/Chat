@@ -1,16 +1,26 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CheckCircle2,
+  Fingerprint,
   KeyRound,
   Loader2,
   Lock,
   ShieldCheck,
   X,
 } from "lucide-react";
-import type { BeginTotpRotationResponse } from "@euromex/shared";
+import type {
+  BeginTotpRotationResponse,
+  EnableBiometricResponse,
+} from "@euromex/shared";
 import { api, clearSession } from "../lib/api";
+import {
+  clearBiometricUnlock,
+  enableBiometricUnlock,
+  hasLocalBiometricFlag,
+  isBiometricAvailable,
+} from "../lib/biometric";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -33,10 +43,18 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "password" | "totp";
+type Tab = "password" | "totp" | "biometric";
 
 export function SettingsModal({ open, onClose }: Props) {
   const [tab, setTab] = useState<Tab>("password");
+  // Solo mostramos el tab de biometría si la app corre en mobile con sensor
+  // disponible. Detectado al abrir el modal (cached por sesión).
+  const [showBiometricTab, setShowBiometricTab] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    void isBiometricAvailable().then(setShowBiometricTab);
+  }, [open]);
 
   if (!open) return null;
 
@@ -68,10 +86,21 @@ export function SettingsModal({ open, onClose }: Props) {
           <TabBtn active={tab === "totp"} onClick={() => setTab("totp")} icon={<ShieldCheck size={14} />}>
             2FA / TOTP
           </TabBtn>
+          {showBiometricTab && (
+            <TabBtn
+              active={tab === "biometric"}
+              onClick={() => setTab("biometric")}
+              icon={<Fingerprint size={14} />}
+            >
+              Huella / Face ID
+            </TabBtn>
+          )}
         </div>
 
         <div className="px-5 py-4">
-          {tab === "password" ? <PasswordPanel onSuccess={onClose} /> : <TotpPanel />}
+          {tab === "password" && <PasswordPanel onSuccess={onClose} />}
+          {tab === "totp" && <TotpPanel />}
+          {tab === "biometric" && <BiometricPanel />}
         </div>
       </div>
     </div>
@@ -447,3 +476,167 @@ function TotpPanel() {
 // Avoid unused-import warning on clearSession (reserved for future "log out
 // after sensitive change" flow if we decide to revoke the current device too)
 void clearSession;
+
+// ---------------------------------------------------------------------------
+// Tab 3 (Fase 27) — Biometric unlock per device
+//
+// El toggle es per-device: activarlo en este APK no afecta a otros devices
+// del mismo usuario. El "username" que se guarda con el token es el del
+// usuario logueado actualmente — al desactivar, el server borra el JTI y el
+// JWT viejo en Keystore queda inservible.
+// ---------------------------------------------------------------------------
+
+function BiometricPanel() {
+  const [enabled, setEnabled] = useState(hasLocalBiometricFlag());
+  const [busy, setBusy] = useState(false);
+  const [showEnableForm, setShowEnableForm] = useState(false);
+  const [totp, setTotp] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<"enabled" | "disabled" | null>(null);
+
+  async function handleEnable(e: React.FormEvent) {
+    e.preventDefault();
+    setErr(null);
+    setBusy(true);
+    setDone(null);
+    try {
+      // 1. Server emite el biometric_unlock_token tras validar TOTP.
+      const res = await api<EnableBiometricResponse>("/auth/biometric/enable", {
+        method: "POST",
+        auth: true,
+        body: { totpToken: totp },
+      });
+      // 2. Necesitamos el username para guardarlo junto al token
+      // (el server NO lo devuelve aquí; lo leemos de /auth/me con cache).
+      const me = await api<{ user: { username: string } }>("/auth/me", {
+        method: "GET",
+        auth: true,
+      });
+      // 3. Guardamos el token cifrado con biometría. Esta llamada hace el
+      // prompt nativo "Confirma con tu huella para activar" — el usuario
+      // debe pasar la verificación una vez antes de que el Keystore acepte
+      // guardar el secret atado a su biometría.
+      await enableBiometricUnlock(res.biometricToken, me.user.username);
+      setEnabled(true);
+      setShowEnableForm(false);
+      setTotp("");
+      setDone("enabled");
+    } catch (e2) {
+      const code = e2 instanceof Error ? e2.message : "error";
+      const map: Record<string, string> = {
+        invalid_totp: "Código 2FA incorrecto",
+        biometric_unavailable: "No hay biometría disponible en este dispositivo",
+      };
+      setErr(map[code] ?? `Error: ${code}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDisable() {
+    setErr(null);
+    setBusy(true);
+    setDone(null);
+    try {
+      await api("/auth/biometric/disable", { method: "POST", auth: true });
+      await clearBiometricUnlock();
+      setEnabled(false);
+      setDone("disabled");
+    } catch (e) {
+      const code = e instanceof Error ? e.message : "error";
+      setErr(`Error: ${code}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 p-3">
+        <Fingerprint className="mt-0.5 size-5 shrink-0 text-primary" />
+        <div className="text-sm">
+          <p className="font-medium text-foreground">Iniciar con huella o Face ID</p>
+          <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+            Solo en este dispositivo. La huella desbloquea un token guardado
+            en el Keystore — el código 2FA sigue siendo necesario al iniciar
+            sesión en otro dispositivo.
+          </p>
+        </div>
+      </div>
+
+      {done === "enabled" && (
+        <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-primary">
+          <CheckCircle2 size={14} />
+          Biometría activada en este dispositivo.
+        </div>
+      )}
+      {done === "disabled" && (
+        <div className="flex items-center gap-2 rounded-lg border border-border bg-muted px-3 py-2 text-xs text-muted-foreground">
+          <CheckCircle2 size={14} />
+          Biometría desactivada. Tendrás que ingresar 2FA al volver.
+        </div>
+      )}
+
+      {err && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          {err}
+        </div>
+      )}
+
+      {!enabled && !showEnableForm && (
+        <Button onClick={() => setShowEnableForm(true)} disabled={busy} className="w-full">
+          <Fingerprint className="size-4" />
+          Activar biometría
+        </Button>
+      )}
+
+      {!enabled && showEnableForm && (
+        <form onSubmit={handleEnable} className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="bio-totp">
+              Código 2FA actual (confirmamos que eres tú antes de activar)
+            </Label>
+            <Input
+              id="bio-totp"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              pattern="\d{6}"
+              maxLength={6}
+              value={totp}
+              onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
+              placeholder="000000"
+              required
+              disabled={busy}
+              autoFocus
+              className="tracking-[0.3em] text-center font-mono text-base"
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-1"
+              onClick={() => {
+                setShowEnableForm(false);
+                setTotp("");
+                setErr(null);
+              }}
+              disabled={busy}
+            >
+              Cancelar
+            </Button>
+            <Button type="submit" disabled={busy || totp.length !== 6} className="flex-1">
+              {busy ? <Loader2 className="size-4 animate-spin" /> : "Activar"}
+            </Button>
+          </div>
+        </form>
+      )}
+
+      {enabled && (
+        <Button variant="outline" onClick={handleDisable} disabled={busy} className="w-full">
+          {busy ? <Loader2 className="size-4 animate-spin" /> : "Desactivar biometría"}
+        </Button>
+      )}
+    </div>
+  );
+}
