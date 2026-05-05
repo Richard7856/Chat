@@ -1,5 +1,32 @@
 apply plugin: 'com.android.application'
 
+// ============================================================================
+// Signing config para release builds (Play Store).
+//
+// Lee credenciales desde variables de entorno para nunca commitear el keystore
+// ni los passwords al repo. Si las env vars no están set, fallbackea al
+// debug keystore (útil cuando alguien builda local sin querer firmar).
+//
+//   EUROMEX_KEYSTORE_PATH       — ruta absoluta al .keystore (default: app/euromex-release.keystore)
+//   EUROMEX_KEYSTORE_PASSWORD   — password del keystore
+//   EUROMEX_KEY_ALIAS           — alias de la key (default: euromex)
+//   EUROMEX_KEY_PASSWORD        — password del alias
+//
+// Generar el keystore una sola vez con:
+//   apps/mobile/scripts/generate-keystore.sh
+//
+// Buildear AAB de release:
+//   apps/mobile/scripts/build-aab.sh
+// ============================================================================
+def releaseKeystorePath = System.getenv('EUROMEX_KEYSTORE_PATH')
+    ?: "${rootDir}/app/euromex-release.keystore"
+def releaseKeystorePassword = System.getenv('EUROMEX_KEYSTORE_PASSWORD')
+def releaseKeyAlias = System.getenv('EUROMEX_KEY_ALIAS') ?: 'euromex'
+def releaseKeyPassword = System.getenv('EUROMEX_KEY_PASSWORD')
+def hasReleaseSigning = releaseKeystorePassword != null &&
+                        releaseKeyPassword != null &&
+                        file(releaseKeystorePath).exists()
+
 android {
     namespace "com.euromex.chat"
     compileSdk rootProject.ext.compileSdkVersion
@@ -16,10 +43,29 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseKeystorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            } else {
+                logger.warn("⚠ Release build sin signing config — usando debug keystore. " +
+                            "NO subir a Play Store. Ver apps/mobile/PUBLISHING.md.")
+                signingConfig signingConfigs.debug
+            }
         }
     }
 }
