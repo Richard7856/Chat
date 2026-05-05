@@ -256,11 +256,101 @@ Emite un código y pruébalo desde otro navegador en
 
 ## Actualizar a nueva versión
 
-Cuando yo pushee cambios a la branch:
+> ⚠️ **PRE-FLIGHT OBLIGATORIO**: SIEMPRE corre el [check de migrations](#check-de-migrations-pendientes-pre-flight) **antes** del restart.
+> El proyecto NO tiene tabla `schema_migrations`, así que las migrations
+> faltantes se descubren solo cuando el endpoint que las necesita devuelve
+> 500. Lección del incidente del 2026-05-05 (Fase 24-25 deployadas en
+> código pero sin aplicar migrations 010/011/012 → reauth + login en 500).
+
+Flujo recomendado para cualquier deploy posterior a 2026-05-05:
 
 ```bash
 cd /opt/euromex
 
+# 1) Trae cambios
+git fetch origin
+git checkout claude/private-chat-mac-auth-e9QYn
+git pull
+
+# 2) Reinstala dependencias (necesario si cambió algún package.json)
+pnpm install
+pnpm rebuild argon2
+
+# 3) PRE-FLIGHT: verifica qué migrations faltan ANTES del restart.
+#    Ver "Check de migrations pendientes" más abajo. Aplica las que
+#    falten EN ORDEN (001 → 013 …) antes de reiniciar el API.
+
+# 4) Build web (Next.js production)
+cd apps/web && pnpm build && cd /opt/euromex
+
+# 5) Restart con systemd (NO mata n8n/Traefik)
+systemctl restart euromex-api euromex-web
+
+# 6) Verifica que arrancaron OK
+systemctl is-active euromex-api euromex-web
+journalctl -u euromex-api -n 20 --no-pager  # busca "Server listening"
+```
+
+### Check de migrations pendientes (pre-flight)
+
+Devuelve `t/f` por cada migration esperada por el código actual. Cualquier
+`f` = migration faltante que hay que aplicar antes del restart.
+
+```bash
+source /opt/euromex/infra/.env && docker exec -i euromex-postgres psql \
+  -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+SELECT
+  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='messages'  AND column_name='content_type')              AS has_001_content_type,
+  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='message_envelopes' AND column_name='nonce')             AS has_002_e2ee,
+  EXISTS(SELECT 1 FROM information_schema.tables  WHERE table_name='attachments')                                           AS has_003_attachments,
+  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='users'     AND column_name='receives_security_alerts')  AS has_005_alerts,
+  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='users'     AND column_name='job_title')                 AS has_006_profile,
+  EXISTS(SELECT 1 FROM information_schema.tables  WHERE table_name='conversation_documents')                                AS has_007_docs,
+  EXISTS(SELECT 1 FROM information_schema.tables  WHERE table_name='activities')                                            AS has_008_activities,
+  EXISTS(SELECT 1 FROM information_schema.tables  WHERE table_name='starred_messages')                                      AS has_009_starred,
+  EXISTS(SELECT 1 FROM information_schema.tables  WHERE table_name='push_subscriptions')                                    AS has_010_push,
+  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='users'     AND column_name='can_download_attachments')  AS has_011_permissions,
+  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='messages'  AND column_name='deleted_at')                AS has_012_edit_delete,
+  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='devices'   AND column_name='biometric_enabled')         AS has_013_biometric;
+"
+```
+
+Si una columna devuelve `f`, aplica el archivo correspondiente:
+
+```bash
+# Genérico — sustituye <archivo> por la migration faltante.
+source /opt/euromex/infra/.env && docker exec -i euromex-postgres psql \
+  -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
+  < /opt/euromex/apps/api/src/db/migrations/<archivo>.sql
+
+# Migrations actuales (al 2026-05-05). Aplica EN ORDEN las que falten:
+#   001-add-message-content.sql        (Fase 3)
+#   002-enable-e2ee.sql                (Fase 4)
+#   003-add-attachments.sql            (Fase 5)
+#   005-security-alerts.sql            (Fase 8.2)
+#   006-profile-extended.sql           (Fase 10)
+#   007-docs-library.sql               (Fase 14)
+#   008-activities-tasks.sql           (Fase 15)
+#   009-starred-messages.sql           (Fase 17)
+#   010-push-subscriptions.sql         (Fase 19)
+#   011-user-permissions.sql           (Fase 24)
+#   012-edit-delete-messages.sql       (Fase 25)
+#   013-biometric-unlock.sql           (Fase 27)
+```
+
+> ⚠️ **Las migrations actuales NO son idempotentes** (no usan
+> `IF NOT EXISTS` en `ALTER TABLE`). Si una falla con
+> "column already exists", está parcialmente aplicada — saltarse y
+> continuar es seguro **solo si es ALTER ADD COLUMN**. Si es
+> `CREATE TABLE` y ya existe, también es safe (idempotente por
+> `CREATE TABLE IF NOT EXISTS`). En cualquier otro caso, pausa y
+> diagnostica.
+
+---
+
+### Bloque legacy (pre-systemd, pre-2026-05-05)
+
+```bash
 # Detén servicios nuestros (n8n/Traefik intactos)
 kill $(cat /var/run/euromex-api.pid) 2>/dev/null
 kill $(cat /var/run/euromex-web.pid) 2>/dev/null

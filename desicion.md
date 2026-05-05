@@ -126,11 +126,18 @@ sudo systemctl start euromex-backup.service
 - **Fase:** 27 (última completada) — Biometric UX en mobile (huella / Face ID):
   login con huella + step-up biométrico para acciones admin sensibles.
   Sprint del audit 2026-05-03 cerrado en Fase 26 (C1-C4, I4, I5 polish).
-- **Estado:** producción corriendo. Mobile: APK debug + release signing
-  listos, iOS scaffold + privacy policy publicados, package renombrado a
-  `com.grupoeuromex.chat`. **Pendiente desplegar al VPS** los commits del
-  2026-05-04 al 2026-05-05 (rename, privacy policy, C3+C4, I4, I5 polish,
-  Fase 27 biometric — incluye `migration 013` que debe aplicarse a mano).
+- **Estado:** **deploy del 2026-05-05 completo** y server respondiendo
+  200 en /auth/login y /auth/reauth tras aplicar las migrations 010-013
+  que faltaban en producción (ver entrada del incidente abajo).
+  APK debug `com.grupoeuromex.chat` armado y disponible en
+  `~/Downloads/euromex-chat-v1.0-debug.apk` (5.8 MB, firmado con debug
+  keystore, USE_BIOMETRIC + USE_FINGERPRINT presentes).
+- **Validación funcional pendiente** en device físico: 12 pasos del plan
+  (login normal, settings tabs, activar biometría, re-login con huella,
+  step-up admin, desactivar). Documentados en el resumen de la sesión
+  del 2026-05-05.
+- **Deuda técnica abierta:** tabla `schema_migrations` + migrations
+  idempotentes — para evitar que se repita el incidente del 2026-05-05.
 - **Última actualización:** 2026-05-05
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
   ⚠️ El VPS debe estar en esta rama: `git checkout claude/private-chat-mac-auth-e9QYn`
@@ -175,20 +182,26 @@ pendiente de aprobación de directivos de Euromex. **Cutover es ~3 comandos de
 **No hay pasos bloqueantes.** El proyecto está vivo y operacional.
 
 0. **Pendientes inmediatos antes del próximo feature:**
-   - Desplegar al VPS los commits del 2026-05-04 al 2026-05-05
-     (`git pull && pnpm install && cd apps/web && pnpm build &&
-     systemctl restart euromex-api euromex-web`). Especialmente
-     necesario para que `/privacy.html` deje de dar 404.
-   - Validar en producción: cambio de password, rotación TOTP,
-     editar/borrar mensajes, scroll-up en chat, vista semanal del
-     calendario con botón "Hoy".
-   - Mobile: rebuild del APK con el nuevo package
-     (`com.grupoeuromex.chat`), reservar el package en Play Console,
-     desinstalar el APK viejo del teléfono antes de instalar el nuevo.
+   - **Validación funcional en device físico** del APK que ya está
+     en `~/Downloads/euromex-chat-v1.0-debug.apk`: instalar (después
+     de desinstalar el viejo `com.euromex.chat`), correr los 12 pasos
+     de smoke test (login normal, settings → tab Huella → activar
+     con TOTP → logout → re-login con huella → step-up admin al
+     revocar device → desactivar).
+   - **Reservar `com.grupoeuromex.chat` en Play Console** cuando vayan
+     a publicar.
 
-1. **Siguiente sprint (audit del 2026-05-03):** I1 búsqueda client-side
-   (~3 sesiones, feature grande), luego I2 reacciones + I3 replies
-   (comparten UI de "interacciones con mensaje").
+1. **Siguiente sprint propuesto — DEUDA TÉCNICA primero (1 sesión):**
+   - Tabla `schema_migrations(version, applied_at, checksum)` + runner
+     CLI (`apps/api/src/scripts/migrate.ts`) que detecta y aplica las
+     migrations faltantes en una transacción. Hacer las 13 migrations
+     existentes idempotentes (`ADD COLUMN IF NOT EXISTS`,
+     `CREATE INDEX IF NOT EXISTS`). Eliminar el riesgo del incidente
+     del 2026-05-05.
+
+2. **Siguiente sprint feature (audit del 2026-05-03):** I1 búsqueda
+   client-side (~3 sesiones, feature grande), luego I2 reacciones + I3
+   replies (comparten UI de "interacciones con mensaje").
 
 2. **Fase 11 — SSO/JWT:** pendiente de definir scope con el usuario antes
    de codear. Preguntas clave: ¿qué herramientas externas? ¿JWT emitido por
@@ -224,6 +237,50 @@ pendiente de aprobación de directivos de Euromex. **Cutover es ~3 comandos de
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-05-05] Incidente deploy: migrations 010-012 nunca aplicadas en producción
+
+- **Síntoma:** después del `git pull` + `systemctl restart` del deploy de
+  Fase 27, todos los `POST /auth/login` y `/auth/reauth` empezaron a
+  responder 500 con
+  `column "can_download_attachments" does not exist`.
+- **Causa raíz:** la migration **`011-user-permissions.sql`** (Fase 24)
+  nunca se aplicó en el VPS. El código que lee permisos
+  (`loadUserPermissions` → `buildAuthResponse`) selecciona 6 columnas que
+  no existían. Por inducción, **`010-push-subscriptions.sql` (Fase 19) y
+  `012-edit-delete-messages.sql` (Fase 25) tampoco** estaban aplicadas.
+  La 013 (biometric) sí porque el deploy actual la incluyó como paso
+  explícito.
+- **Por qué no se notó antes:** el código de Fase 24 (commit `f1176d7`)
+  se commiteó y subió pero la migration acompañante no se corrió. El
+  server siguió funcionando porque entre Fase 24 y Fase 27 nadie hizo
+  login fresco — solo se usaba `requireAuth` con sesiones existentes que
+  no tocaban `loadUserPermissions`. Solo al re-loguear (cuando el JWT
+  expiró o el user limpió cache) se desencadenó el path roto.
+- **Resolución:** aplicadas 010, 011, 012 en orden con
+  `psql -v ON_ERROR_STOP=1 < <archivo>`, restart de `euromex-api`,
+  validado que `/auth/login` y `/auth/reauth` vuelven a responder 200.
+- **Lecciones / cambios duraderos:**
+  - **HOSTINGER.md:** añadida sección "Check de migrations pendientes
+    (pre-flight)" con un único query SQL que devuelve `t/f` por cada una
+    de las 12 migrations actuales. Es OBLIGATORIO correrlo antes de
+    cada `systemctl restart` post-pull.
+  - **HOSTINGER.md:** el flujo de deploy se modernizó al patrón de
+    systemd (el bloque legacy con `nohup` queda preservado abajo
+    marcado como pre-2026-05-05).
+  - **Migrations actuales NO son idempotentes** (`ALTER TABLE ADD
+    COLUMN` sin `IF NOT EXISTS`). Si una falla a medias, requiere
+    diagnóstico manual.
+- **Deuda técnica abierta — tabla `schema_migrations`:** el usuario
+  aprobó la idea. Diseño propuesto para una iteración futura: tabla
+  `schema_migrations(version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ
+  DEFAULT now(), checksum TEXT)`, runner CLI en
+  `apps/api/src/scripts/migrate.ts` que lista archivos en
+  `db/migrations/`, los ordena por nombre, aplica los faltantes en una
+  transacción, y los registra. Hacer las migrations existentes
+  idempotentes (`ADD COLUMN IF NOT EXISTS`) en el mismo PR. **No se
+  hizo en esta sesión** para no expandir el scope; flagged como
+  "siguiente sesión".
 
 ### [2026-05-05] Fase 27 — Biometric UX en mobile (huella / Face ID)
 
