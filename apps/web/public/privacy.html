@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="index,follow" />
+  <title>Política de privacidad — Euromex Chat</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 32px 24px 64px;
+      color: #0f172a;
+      line-height: 1.55;
+      background: #fafafb;
+    }
+    h1 { font-size: 24px; font-weight: 700; margin: 0 0 4px; letter-spacing: -0.01em; }
+    h2 { font-size: 16px; font-weight: 600; margin: 32px 0 8px; letter-spacing: -0.01em; }
+    p, ul { margin: 8px 0; }
+    ul { padding-left: 20px; }
+    code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+    .meta { color: #64748b; font-size: 13px; margin-bottom: 24px; }
+    a { color: #2563eb; }
+    .section { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 20px 24px; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Política de privacidad</h1>
+  <p class="meta">Euromex Chat · Vigente desde el 4 de mayo de 2026</p>
+
+  <div class="section">
+    <p>
+      Esta política describe qué datos recolecta <strong>Euromex Chat</strong> (la
+      aplicación, en sus versiones web y móvil), cómo se usan y bajo qué
+      controles. La aplicación es de uso interno de Grupo Euromex S.A. de C.V.
+      ("la Empresa") para comunicación entre colaboradores autorizados.
+    </p>
+  </div>
+
+  <h2>1. Quién recibe estos datos</h2>
+  <div class="section">
+    <p>
+      Toda la información se almacena en servidores que la Empresa controla
+      directamente (auto-hospedaje en VPS propio). <strong>No compartimos
+      datos personales con terceros</strong> bajo ninguna circunstancia. No
+      hay anunciantes, ni redes de tracking, ni proveedores de analytics.
+    </p>
+  </div>
+
+  <h2>2. Datos que recolectamos</h2>
+  <div class="section">
+    <ul>
+      <li><strong>Identidad de cuenta</strong>: nombre visible, nombre de usuario,
+        email (opcional). Necesarios para que otros colaboradores te identifiquen.</li>
+      <li><strong>Credenciales</strong>: contraseña hasheada con Argon2id
+        (irrecuperable) y secreto TOTP cifrado en reposo. Nadie en la
+        Empresa puede ver tu contraseña en texto plano.</li>
+      <li><strong>Mensajes y adjuntos</strong>: cifrados de extremo a extremo
+        (E2EE) con NaCl/X25519. <strong>El servidor solo ve ciphertext</strong>;
+        ni la Empresa ni administradores externos pueden descifrar el contenido
+        sin las claves privadas que viven solo en tus dispositivos.</li>
+      <li><strong>Metadatos del dispositivo</strong>: identificador interno
+        (UUID generado por nosotros, no es el Advertising ID de Google ni el
+        IDFA de Apple), nombre del dispositivo, plataforma (web/iOS/Android),
+        user-agent, último acceso. Necesarios para enrutar mensajes E2EE al
+        device correcto y revocar acceso si pierdes el dispositivo.</li>
+      <li><strong>Audit log</strong>: acciones administrativas (login, descargas,
+        cambios de permiso, edición/borrado de mensajes) con timestamp e
+        IP. Necesario para detectar incidentes de seguridad. Se conserva
+        mientras la cuenta del usuario esté activa.</li>
+      <li><strong>Suscripción a notificaciones push</strong> (opcional, si el
+        usuario lo activa): endpoint del proveedor (Web Push o Firebase Cloud
+        Messaging) y claves criptográficas necesarias para entregar la
+        notificación. El contenido de la notificación NO incluye plaintext
+        de mensajes.</li>
+    </ul>
+  </div>
+
+  <h2>3. Datos que NO recolectamos</h2>
+  <div class="section">
+    <ul>
+      <li>Ubicación geográfica (GPS, BSSID, etc.).</li>
+      <li>Información financiera (tarjetas, cuentas bancarias).</li>
+      <li>Información de salud o fitness.</li>
+      <li>Historial de navegación web fuera de la app.</li>
+      <li>Contactos del dispositivo o lista de aplicaciones instaladas.</li>
+      <li>Datos para publicidad o personalización de anuncios.</li>
+      <li>Métricas de uso vendidas a analytics de terceros (Google Analytics,
+        Mixpanel, etc.).</li>
+    </ul>
+  </div>
+
+  <h2>4. Cómo usamos tus datos</h2>
+  <div class="section">
+    <p>
+      Únicamente para ofrecer la funcionalidad de chat seguro: enrutar
+      mensajes a tus dispositivos, mostrar conversaciones, gestionar el
+      acceso por dispositivo, y mantener el audit log requerido para
+      seguridad corporativa. <strong>No usamos tus datos para entrenar
+      modelos, segmentar publicidad ni venderlos.</strong>
+    </p>
+  </div>
+
+  <h2>5. Cifrado y seguridad</h2>
+  <div class="section">
+    <ul>
+      <li><strong>En tránsito</strong>: TLS 1.3 entre cliente y servidor (HTTPS
+        obligatorio).</li>
+      <li><strong>En reposo</strong>: el servidor almacena solo ciphertext de
+        mensajes y adjuntos. La clave maestra del servidor cifra metadatos
+        sensibles (TOTP secret) en BD.</li>
+      <li><strong>De extremo a extremo</strong>: cada mensaje se cifra con
+        nacl.box (X25519 + XSalsa20-Poly1305) una vez por dispositivo
+        destinatario. Solo los devices con la clave privada correspondiente
+        pueden descifrar.</li>
+      <li><strong>Bloqueo de capturas</strong> (Android, opcional vía admin):
+        al activar el flag <code>can_share_externally = false</code>, la app
+        Android bloquea screenshots y screen recording a nivel del sistema
+        operativo (FLAG_SECURE).</li>
+    </ul>
+  </div>
+
+  <h2>6. Tus derechos</h2>
+  <div class="section">
+    <ul>
+      <li><strong>Acceso</strong>: contacta al admin de tu workspace para
+        obtener una copia de tus datos.</li>
+      <li><strong>Rectificación</strong>: puedes editar tu nombre/email desde
+        la app (sección perfil) o solicitar al admin.</li>
+      <li><strong>Borrado</strong>: el admin puede deshabilitar tu cuenta y
+        revocar todos tus dispositivos. Los mensajes que enviaste pueden ser
+        borrados por ti (soft-delete) en cualquier momento — el contenido
+        se oculta para todos los usuarios, pero metadata permanece en el
+        audit log de seguridad.</li>
+      <li><strong>Portabilidad</strong>: la Empresa puede proveer un export de
+        tus mensajes descifrables si lo solicitas formalmente. Como la app
+        es E2EE, requiere acceso a los devices del usuario para descifrar.</li>
+      <li><strong>Revocación de consentimiento</strong>: deja de usar la app
+        y solicita al admin la deshabilitación de tu cuenta.</li>
+    </ul>
+  </div>
+
+  <h2>7. Retención de datos</h2>
+  <div class="section">
+    <p>
+      Los datos persisten mientras tu cuenta esté activa. Al deshabilitar
+      la cuenta:
+    </p>
+    <ul>
+      <li>Tus credenciales (password hash + TOTP) se eliminan inmediatamente.</li>
+      <li>Tus dispositivos quedan revocados y no pueden volver a conectarse.</li>
+      <li>Los mensajes que enviaste permanecen para los demás participantes
+        (no podemos descifrarlos del lado del servidor para borrar el
+        contenido, solo metadatos).</li>
+      <li>El audit log se conserva por hasta 5 años para cumplimiento de
+        seguridad corporativa, después se purga automáticamente.</li>
+    </ul>
+  </div>
+
+  <h2>8. Menores de edad</h2>
+  <div class="section">
+    <p>
+      Euromex Chat está dirigido exclusivamente a colaboradores mayores de
+      edad de Grupo Euromex S.A. de C.V. No recolectamos datos de menores
+      de 18 años a sabiendas. Si crees que un menor tiene una cuenta,
+      contacta al admin para que la deshabilite.
+    </p>
+  </div>
+
+  <h2>9. Permisos solicitados (apps móviles)</h2>
+  <div class="section">
+    <ul>
+      <li><strong>Internet</strong>: necesario para conectar al servidor de chat.</li>
+      <li><strong>Notificaciones</strong>: opcional, solo si activas las
+        notificaciones push.</li>
+      <li><strong>Almacenamiento</strong>: opcional, solo cuando descargas un
+        adjunto al disco del dispositivo.</li>
+      <li><strong>Foreground service</strong> (Android): para mantener la
+        conexión socket en segundo plano cuando recibes mensajes.</li>
+    </ul>
+    <p>
+      <strong>NO solicitamos</strong>: cámara, micrófono, ubicación, contactos,
+      calendario, almacenamiento amplio, ni Advertising ID.
+    </p>
+  </div>
+
+  <h2>10. Cambios a esta política</h2>
+  <div class="section">
+    <p>
+      Si modificamos esta política, te notificaremos vía un mensaje
+      destacado dentro de la app y actualizaremos la fecha "Vigente desde"
+      en la parte superior. Los cambios sustanciales requieren tu consentimiento
+      explícito antes de aplicarse.
+    </p>
+  </div>
+
+  <h2>11. Contacto</h2>
+  <div class="section">
+    <p>
+      Para ejercer cualquiera de tus derechos, reportar un incidente de
+      seguridad o hacer una pregunta sobre esta política, contacta al
+      administrador del workspace o escribe a:
+    </p>
+    <p>
+      <strong>Grupo Euromex S.A. de C.V.</strong><br />
+      Email: <a href="mailto:admin@euromex.com.mx">admin@euromex.com.mx</a>
+    </p>
+  </div>
+
+  <p class="meta" style="margin-top: 32px;">
+    Última actualización: 4 de mayo de 2026
+  </p>
+</body>
+</html>
