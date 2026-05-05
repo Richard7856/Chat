@@ -32,4 +32,9 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Fase 27 — biometric unlock (capacitor-native-biometric).
+         USE_BIOMETRIC cubre Android 9+ (API 28). USE_FINGERPRINT
+         queda como fallback para Android 6-8. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.USE_FINGERPRINT" />
 </manifest>

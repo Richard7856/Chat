@@ -7,3 +7,6 @@ project(':capacitor-app').projectDir = new File('../../../node_modules/.pnpm/@ca
 
 include ':capacitor-status-bar'
 project(':capacitor-status-bar').projectDir = new File('../../../node_modules/.pnpm/@capacitor+status-bar@6.0.3_@capacitor+core@6.2.1/node_modules/@capacitor/status-bar/android')
+
+include ':capacitor-native-biometric'
+project(':capacitor-native-biometric').projectDir = new File('../../../node_modules/.pnpm/capacitor-native-biometric@4.2.2/node_modules/capacitor-native-biometric/android')
