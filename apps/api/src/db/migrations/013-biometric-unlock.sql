@@ -13,8 +13,8 @@
 --   falla aunque el JWT en sí siga válido por TTL.
 
 ALTER TABLE devices
-  ADD COLUMN biometric_enabled    BOOLEAN NOT NULL DEFAULT false,
-  ADD COLUMN biometric_token_jti  TEXT    NULL;
+  ADD COLUMN IF NOT EXISTS biometric_enabled    BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS biometric_token_jti  TEXT    NULL;
 
 COMMENT ON COLUMN devices.biometric_enabled IS
   'Per-device opt-in para login con huella. Independiente de role/permisos.';

@@ -256,13 +256,12 @@ Emite un código y pruébalo desde otro navegador en
 
 ## Actualizar a nueva versión
 
-> ⚠️ **PRE-FLIGHT OBLIGATORIO**: SIEMPRE corre el [check de migrations](#check-de-migrations-pendientes-pre-flight) **antes** del restart.
-> El proyecto NO tiene tabla `schema_migrations`, así que las migrations
-> faltantes se descubren solo cuando el endpoint que las necesita devuelve
-> 500. Lección del incidente del 2026-05-05 (Fase 24-25 deployadas en
-> código pero sin aplicar migrations 010/011/012 → reauth + login en 500).
+> 💡 **Desde Fase 28 (2026-05-05) hay runner de migrations.** Las migrations
+> son idempotentes y se trackean en `schema_migrations`. El flujo nuevo
+> es trivial: `pnpm migrate:status` muestra qué falta, `pnpm migrate`
+> aplica las pendientes con un BEGIN/COMMIT por archivo.
 
-Flujo recomendado para cualquier deploy posterior a 2026-05-05:
+### Flujo de deploy (post 2026-05-05)
 
 ```bash
 cd /opt/euromex
@@ -276,9 +275,13 @@ git pull
 pnpm install
 pnpm rebuild argon2
 
-# 3) PRE-FLIGHT: verifica qué migrations faltan ANTES del restart.
-#    Ver "Check de migrations pendientes" más abajo. Aplica las que
-#    falten EN ORDEN (001 → 013 …) antes de reiniciar el API.
+# 3) Migrations: ver qué hay pendiente y aplicar.
+#    El runner usa el .env del API (DATABASE_URL).
+cd apps/api
+source .env  # pone DATABASE_URL en el shell
+pnpm migrate:status        # info — debería listar las nuevas como PENDING
+pnpm migrate               # aplica las pendientes; cada una en su transacción
+cd /opt/euromex
 
 # 4) Build web (Next.js production)
 cd apps/web && pnpm build && cd /opt/euromex
@@ -291,10 +294,46 @@ systemctl is-active euromex-api euromex-web
 journalctl -u euromex-api -n 20 --no-pager  # busca "Server listening"
 ```
 
-### Check de migrations pendientes (pre-flight)
+### Bootstrap único — DB legacy → tabla schema_migrations
 
-Devuelve `t/f` por cada migration esperada por el código actual. Cualquier
-`f` = migration faltante que hay que aplicar antes del restart.
+Solo necesario UNA VEZ después del deploy de Fase 28 (2026-05-05). En el
+VPS las migrations 001-013 ya están aplicadas pero no registradas; el
+bootstrap crea `schema_migrations` y las marca como aplicadas sin
+re-ejecutar SQL.
+
+```bash
+cd /opt/euromex/apps/api
+source .env
+pnpm migrate:bootstrap
+# → "✔ Bootstrap completo: 14 migrations registradas."
+
+# Validar:
+pnpm migrate:status
+# → todo debería estar 'applied' incluyendo 014-schema-migrations-tracking
+```
+
+**Si bootstrap falla con "La tabla schema_migrations YA existe"** = ya
+se corrió antes; usar `pnpm migrate:status` para ver el estado.
+
+### Comandos del runner
+
+| Comando | Qué hace |
+|---|---|
+| `pnpm migrate:status` | Lista cada `.sql` y marca `applied` / `PENDING` / `CHECKSUM MISMATCH`. Read-only. |
+| `pnpm migrate` | Aplica las pendientes en orden, BEGIN/COMMIT por archivo. Si una falla, ROLLBACK de esa + exit 1; las anteriores quedan aplicadas. |
+| `pnpm migrate:dry-run` | Como `migrate` pero NO ejecuta nada — solo lista qué se aplicaría. |
+| `pnpm migrate:bootstrap` | One-shot para DBs legacy (ver arriba). |
+
+Las migrations son **append-only**: una vez registrada, NO se re-aplica
+aunque el `.sql` cambie. Para corregir algo aplicado, crear migration
+nueva. Si el archivo cambia, el runner avisa con
+"CHECKSUM MISMATCH" pero no la re-corre (es un warning, no un error).
+
+### Pre-flight legacy (manual, para diagnóstico de DBs sin runner)
+
+Si por alguna razón no tienes el runner disponible y necesitas saber qué
+columnas faltan, usa este SQL ad-hoc. Solo para diagnosticar — el runner
+es la fuente de verdad oficial.
 
 ```bash
 source /opt/euromex/infra/.env && docker exec -i euromex-postgres psql \
@@ -311,40 +350,10 @@ SELECT
   EXISTS(SELECT 1 FROM information_schema.tables  WHERE table_name='push_subscriptions')                                    AS has_010_push,
   EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='users'     AND column_name='can_download_attachments')  AS has_011_permissions,
   EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='messages'  AND column_name='deleted_at')                AS has_012_edit_delete,
-  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='devices'   AND column_name='biometric_enabled')         AS has_013_biometric;
+  EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='devices'   AND column_name='biometric_enabled')         AS has_013_biometric,
+  EXISTS(SELECT 1 FROM information_schema.tables  WHERE table_name='schema_migrations')                                     AS has_014_tracking;
 "
 ```
-
-Si una columna devuelve `f`, aplica el archivo correspondiente:
-
-```bash
-# Genérico — sustituye <archivo> por la migration faltante.
-source /opt/euromex/infra/.env && docker exec -i euromex-postgres psql \
-  -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
-  < /opt/euromex/apps/api/src/db/migrations/<archivo>.sql
-
-# Migrations actuales (al 2026-05-05). Aplica EN ORDEN las que falten:
-#   001-add-message-content.sql        (Fase 3)
-#   002-enable-e2ee.sql                (Fase 4)
-#   003-add-attachments.sql            (Fase 5)
-#   005-security-alerts.sql            (Fase 8.2)
-#   006-profile-extended.sql           (Fase 10)
-#   007-docs-library.sql               (Fase 14)
-#   008-activities-tasks.sql           (Fase 15)
-#   009-starred-messages.sql           (Fase 17)
-#   010-push-subscriptions.sql         (Fase 19)
-#   011-user-permissions.sql           (Fase 24)
-#   012-edit-delete-messages.sql       (Fase 25)
-#   013-biometric-unlock.sql           (Fase 27)
-```
-
-> ⚠️ **Las migrations actuales NO son idempotentes** (no usan
-> `IF NOT EXISTS` en `ALTER TABLE`). Si una falla con
-> "column already exists", está parcialmente aplicada — saltarse y
-> continuar es seguro **solo si es ALTER ADD COLUMN**. Si es
-> `CREATE TABLE` y ya existe, también es safe (idempotente por
-> `CREATE TABLE IF NOT EXISTS`). En cualquier otro caso, pausa y
-> diagnostica.
 
 ---
 

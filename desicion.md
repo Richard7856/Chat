@@ -123,21 +123,21 @@ sudo systemctl start euromex-backup.service
 
 ## Estado actual
 
-- **Fase:** 27 (última completada) — Biometric UX en mobile (huella / Face ID):
-  login con huella + step-up biométrico para acciones admin sensibles.
-  Sprint del audit 2026-05-03 cerrado en Fase 26 (C1-C4, I4, I5 polish).
-- **Estado:** **deploy del 2026-05-05 completo** y server respondiendo
-  200 en /auth/login y /auth/reauth tras aplicar las migrations 010-013
-  que faltaban en producción (ver entrada del incidente abajo).
-  APK debug `com.grupoeuromex.chat` armado y disponible en
-  `~/Downloads/euromex-chat-v1.0-debug.apk` (5.8 MB, firmado con debug
-  keystore, USE_BIOMETRIC + USE_FINGERPRINT presentes).
-- **Validación funcional pendiente** en device físico: 12 pasos del plan
-  (login normal, settings tabs, activar biometría, re-login con huella,
-  step-up admin, desactivar). Documentados en el resumen de la sesión
-  del 2026-05-05.
-- **Deuda técnica abierta:** tabla `schema_migrations` + migrations
-  idempotentes — para evitar que se repita el incidente del 2026-05-05.
+- **Fase:** 28 (última completada) — Tracker de migrations + runner CLI
+  (`pnpm migrate`, `pnpm migrate:status`, `pnpm migrate:bootstrap`).
+  Cierra la deuda técnica abierta por el incidente del 2026-05-05.
+- **Fases recientes:** 27 — Biometric UX en mobile (huella/Face ID),
+  26 — sprint del audit 2026-05-03 cerrado (C1-C4, I4, I5 polish).
+- **Estado:** producción corriendo. APK debug `com.grupoeuromex.chat` en
+  `~/Downloads/euromex-chat-v1.0-debug.apk` (5.8 MB, firmado debug,
+  USE_BIOMETRIC + USE_FINGERPRINT presentes). Validación funcional del
+  APK en device físico **pendiente**.
+- **Pendiente al deployar Fase 28 al VPS** (paso UNA SOLA VEZ):
+  `cd apps/api && source .env && pnpm migrate:bootstrap` para registrar
+  las 13 migrations existentes en la nueva tabla `schema_migrations`.
+  Después el flujo de deploy se simplifica a `git pull && pnpm install
+  && pnpm --filter @euromex/api migrate && cd apps/web && pnpm build
+  && systemctl restart …`.
 - **Última actualización:** 2026-05-05
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
   ⚠️ El VPS debe estar en esta rama: `git checkout claude/private-chat-mac-auth-e9QYn`
@@ -182,6 +182,10 @@ pendiente de aprobación de directivos de Euromex. **Cutover es ~3 comandos de
 **No hay pasos bloqueantes.** El proyecto está vivo y operacional.
 
 0. **Pendientes inmediatos antes del próximo feature:**
+   - **Deploy al VPS de Fase 28** (runner de migrations) + `pnpm
+     migrate:bootstrap` UNA SOLA VEZ para registrar las 13 migrations
+     legacy en la nueva tabla `schema_migrations`. Después,
+     `pnpm migrate:status` debe listar las 14 como `applied`.
    - **Validación funcional en device físico** del APK que ya está
      en `~/Downloads/euromex-chat-v1.0-debug.apk`: instalar (después
      de desinstalar el viejo `com.euromex.chat`), correr los 12 pasos
@@ -191,15 +195,7 @@ pendiente de aprobación de directivos de Euromex. **Cutover es ~3 comandos de
    - **Reservar `com.grupoeuromex.chat` en Play Console** cuando vayan
      a publicar.
 
-1. **Siguiente sprint propuesto — DEUDA TÉCNICA primero (1 sesión):**
-   - Tabla `schema_migrations(version, applied_at, checksum)` + runner
-     CLI (`apps/api/src/scripts/migrate.ts`) que detecta y aplica las
-     migrations faltantes en una transacción. Hacer las 13 migrations
-     existentes idempotentes (`ADD COLUMN IF NOT EXISTS`,
-     `CREATE INDEX IF NOT EXISTS`). Eliminar el riesgo del incidente
-     del 2026-05-05.
-
-2. **Siguiente sprint feature (audit del 2026-05-03):** I1 búsqueda
+1. **Siguiente sprint feature (audit del 2026-05-03):** I1 búsqueda
    client-side (~3 sesiones, feature grande), luego I2 reacciones + I3
    replies (comparten UI de "interacciones con mensaje").
 
@@ -237,6 +233,66 @@ pendiente de aprobación de directivos de Euromex. **Cutover es ~3 comandos de
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-05-05] Fase 28 — Tracker de migrations + runner CLI
+
+- **Contexto:** continuación inmediata del incidente del 2026-05-05 (ver
+  entrada de abajo). Cierra la deuda técnica abierta. El usuario aprobó
+  la idea ("genial vamos con la migración más grande de una vez").
+- **Decisión:**
+  - Tabla `schema_migrations(version, checksum, applied_at, applied_by)`
+    creada por `migration 014-schema-migrations-tracking.sql`.
+  - Runner CLI en
+    [`apps/api/src/scripts/migrate.ts`](apps/api/src/scripts/migrate.ts)
+    con 4 comandos: `status`, `apply` (default), `dry-run`, `bootstrap`.
+  - Scripts en [`apps/api/package.json`](apps/api/package.json):
+    `pnpm migrate`, `pnpm migrate:status`, `pnpm migrate:dry-run`,
+    `pnpm migrate:bootstrap`.
+  - **El runner intencionalmente NO importa `db/pg.ts`** (ese carga el
+    `config.ts` que exige `REDIS_URL`, `JWT_SECRET`, etc.). Crea su
+    propio `pg.Pool` desde `DATABASE_URL`. Esto desacopla las migrations
+    de la config completa de la app — útil para CI o setup scripts.
+- **Detalles del diseño:**
+  - **Append-only:** una vez registrada, una migration NO se re-aplica
+    aunque el archivo cambie. El runner detecta `CHECKSUM MISMATCH` y
+    avisa con WARN, pero no bloquea. Para corregir SQL ya aplicado, hay
+    que crear una migration nueva.
+  - **Una transacción por migration:** `BEGIN; <SQL>; INSERT INTO
+    schema_migrations; COMMIT`. Si una falla, ROLLBACK de esa + exit 1;
+    las anteriores quedan aplicadas. El operador resuelve el error y
+    re-corre `pnpm migrate` (re-arranca desde donde quedó).
+  - **Bootstrap:** caso especial para DBs legacy donde las migrations YA
+    están aplicadas pero no registradas (= nuestro caso post-2026-05-05).
+    Aplica solo la 014 (que crea la tabla) y marca el resto como
+    aplicadas con `INSERT … ON CONFLICT DO NOTHING`. Falla si la tabla
+    ya existe (protección contra correrlo dos veces).
+  - **Idempotencia:** las 13 migrations previas ya usaban
+    `ALTER TABLE … ADD COLUMN IF NOT EXISTS` y
+    `CREATE TABLE IF NOT EXISTS`, excepto **013 que se corrigió en este
+    PR** (faltaba `IF NOT EXISTS` en las dos `ADD COLUMN`).
+- **Smoke test ejecutado en BD efímera (postgres:16 docker):**
+  1. `schema.sql` aplicado → 18 tablas.
+  2. `pnpm migrate:bootstrap` → 13 migrations registradas.
+  3. `pnpm migrate:status` → todo `applied`.
+  4. `pnpm migrate` → "Nada pendiente."
+  5. `pnpm migrate:bootstrap` segunda vez → falla con error claro.
+  6. Crear migration fake `015-fake-test.sql` + `pnpm migrate` →
+     detecta y aplica solo esa.
+- **Alternativas descartadas:**
+  - Librería externa (`db-migrate`, `node-pg-migrate`): añade dep grande
+    para algo que en 200 líneas de TS hacemos exactamente como queremos.
+  - Migrations en Markdown con metadata embedida: cute pero sobreingeniería.
+  - Snapshots SQL completos por versión: duplica info; el flujo
+    incremental con append-only es estándar y simple.
+- **Pasos manuales requeridos en el VPS post-pull:**
+  1. `cd apps/api && source .env && pnpm migrate:bootstrap` (UNA SOLA VEZ).
+  2. A partir de ahí, el flujo de deploy nuevo es:
+     `git pull && pnpm install && pnpm --filter @euromex/api migrate &&
+     cd apps/web && pnpm build && systemctl restart euromex-api euromex-web`.
+- **Documentación:** [HOSTINGER.md](HOSTINGER.md) "Actualizar a nueva
+  versión" reescrito completo con el flow del runner, sección
+  "Bootstrap único" y tabla con los 4 comandos. El bloque "Pre-flight
+  legacy (manual)" queda para diagnóstico si alguna vez el runner no está.
 
 ### [2026-05-05] Incidente deploy: migrations 010-012 nunca aplicadas en producción
 
