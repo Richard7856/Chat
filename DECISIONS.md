@@ -370,6 +370,33 @@
 
 ---
 
+## ADR-037 · Parches de robustez y seguridad — migrate.ts + biometric/unlock (2026-05-06)
+
+### ADR-037a · `connectionTimeoutMillis` en migrate.ts
+
+- **Contexto:** `pg.Pool` sin timeout cuelga indefinidamente si DNS no resuelve o el host es inalcanzable. El operador queda esperando sin feedback ni posibilidad de interrumpir limpiamente.
+- **Decisión:** agregar `connectionTimeoutMillis: 5_000` al pool del migration runner. Falla rápido con error claro en lugar de colgar.
+- **Alternativas:** timeout vía `setTimeout` externo (más frágil, no cancela la promesa pg). Signal de proceso (overkill para 1 línea).
+- **Riesgos:** en conexiones lentas legítimas (VPN, disco lento en VPS) podría fallar prematuramente. 5 segundos es conservador para LAN/localhost; aumentar si el VPS tiene latencia alta.
+
+### ADR-037b · Production guard interactivo en migrate.ts
+
+- **Contexto:** `pnpm migrate` con `DATABASE_URL` apuntando a producción aplica migrations sin confirmación. Riesgo de aplicar prematuramente desde laptop de desarrollo.
+- **Decisión:** detectar si el hostname en `DATABASE_URL` es no-local (no `localhost`/`127.0.0.1`/`::1`) o si `NODE_ENV=production`. Si aplica, pedir confirmación interactiva antes de `apply`/`bootstrap`. Flag `--yes` para CI/scripts.
+- **Alternativas:** env var `ALLOW_PROD_MIGRATE=1` (menos visible). Solo warning sin bloqueo (no da protección real). Bloquear siempre en prod (rompe el CI que sí debe poder migrar).
+- **Riesgos:** rompe flujos automatizados que no pasen `--yes`. Workaround: pasar `--yes` explícitamente en el comando de deploy del VPS.
+- **Próximos pasos:** actualizar el runbook en HOSTINGER.md para incluir `--yes` en el comando de deploy (`pnpm migrate -- --yes`).
+
+### ADR-037c · Fingerprint de device en biometric/unlock
+
+- **Contexto:** `biometric_token_jti` protege contra revocación pero no contra extracción del JWT del Keystore (requiere root del device). Un atacante con root puede usar el token desde cualquier device durante los 90 días de TTL.
+- **Decisión:** guardar el `User-Agent` del request al activar biometría en `devices.biometric_fingerprint`. En cada `/auth/biometric/unlock`, comparar con el UA del request entrante. Mismatch → audit log `biometric.fingerprint_mismatch` + rechazo `401`.
+- **Alternativas:** IP binding (cambia con WiFi/cellular, demasiados falsos positivos). TOTP step-up en mismatch (mejor UX pero más complejo). Solo loguear sin rechazar (no protege nada).
+- **Riesgos:** browser update puede cambiar el UA levemente y causar falso positivo. Workaround explícito: desactivar/reactivar biometría para resetear el fingerprint (actualiza `biometric_fingerprint` con el UA nuevo). Devices con biometría activada ANTES de este parche tienen `biometric_fingerprint = NULL` y no aplican el check hasta que el usuario haga re-enable.
+- **Limitación aceptada:** User-Agent es una heurística débil comparado con un fingerprint de hardware real (FIDO2/WebAuthn). Es una mejora pragmática con 0 dependencias nuevas. Para protección fuerte, ver Opción A del sprint (Fase 29 WebAuthn).
+
+---
+
 **Fuentes:**
 - Razonamientos detallados originales: [archive/HISTORY.md](archive/HISTORY.md) (~1900 líneas, ordenado por fecha descendente)
 - Estado operacional: [PROJECT_BRIEF.md](PROJECT_BRIEF.md)

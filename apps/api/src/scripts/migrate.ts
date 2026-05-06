@@ -41,6 +41,7 @@ import "dotenv/config";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 
@@ -59,6 +60,9 @@ const pool = new pg.Pool({
   connectionString: databaseUrl,
   max: 4,
   idleTimeoutMillis: 5_000,
+  // Sin este timeout, el pool cuelga indefinidamente si DNS no resuelve
+  // o el host es inalcanzable, dejando al operador sin feedback.
+  connectionTimeoutMillis: 5_000,
 });
 
 // Resolver el dir de migrations relativo a este archivo. Usar import.meta
@@ -300,14 +304,84 @@ async function cmdBootstrap(opts: { appliedBy: string }): Promise<void> {
   console.log("   Próximas veces: usa `pnpm migrate` para aplicar pendientes nuevas.");
 }
 
+// ── Production guard ──────────────────────────────────────────────────────────
+// Si DATABASE_URL apunta a un host remoto (no localhost), lo más probable es
+// que sea la BD de producción. Se pide confirmación antes de apply/bootstrap
+// para evitar que alguien corra `pnpm migrate` desde su laptop por accidente.
+
+function isRemoteDb(dbUrl: string): boolean {
+  try {
+    const { hostname } = new URL(dbUrl);
+    return !["localhost", "127.0.0.1", "::1", ""].includes(hostname);
+  } catch {
+    return false;
+  }
+}
+
+function obfuscatedUrl(dbUrl: string): string {
+  try {
+    const u = new URL(dbUrl);
+    u.password = "***";
+    return u.toString();
+  } catch {
+    return "(URL inválida)";
+  }
+}
+
+function stdinPrompt(question: string): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
+async function guardProduction(dbUrl: string, hasYes: boolean, cmd: string): Promise<void> {
+  // dry-run y status son solo lectura; no necesitan confirmación.
+  if (!["apply", "bootstrap"].includes(cmd)) return;
+
+  const remote = isRemoteDb(dbUrl);
+  const envProd = process.env.NODE_ENV === "production";
+  if (!remote && !envProd) return;
+
+  const reason = remote
+    ? `DATABASE_URL apunta a host remoto (${obfuscatedUrl(dbUrl)})`
+    : "NODE_ENV=production";
+
+  console.warn("");
+  console.warn(`⚠️  PRODUCCIÓN — ${reason}`);
+  console.warn(`   Comando: ${cmd}`);
+  console.warn("");
+
+  if (hasYes) {
+    console.warn("   (--yes: saltando confirmación interactiva)");
+    console.warn("");
+    return;
+  }
+
+  const answer = await stdinPrompt('   ¿Continuar contra producción? Escribe "si" para confirmar: ');
+  if (answer.trim().toLowerCase() !== "si") {
+    console.log("Operación cancelada.");
+    process.exit(0);
+  }
+  console.log("");
+}
+
 function whoAmI(): string {
   return process.env.USER || process.env.LOGNAME || "migrate-script";
 }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const cmd = args[0] ?? "apply";
+  // Separar flags (--yes) de argumentos posicionales (status, apply, etc.)
+  const hasYes = args.includes("--yes");
+  const positional = args.filter((a) => !a.startsWith("--"));
+  const cmd = positional[0] ?? "apply";
   const appliedBy = whoAmI();
+
+  await guardProduction(databaseUrl!, hasYes, cmd);
 
   switch (cmd) {
     case "status":

@@ -8,27 +8,19 @@
 
 ## 1. Parches críticos pendientes
 
-### 🔴 #1 — `migrate.ts` sin `connectionTimeoutMillis`
+### ✅ #1 — `migrate.ts` sin `connectionTimeoutMillis` — **RESUELTO 2026-05-06**
 
-- **Archivo:** `apps/api/src/scripts/migrate.ts:21-25`
-- **Problema:** `pg.Pool` sin timeout cuelga indefinidamente si DNS no resuelve o el host es inalcanzable. El operador queda esperando sin feedback.
-- **Fix:** agregar `connectionTimeoutMillis: 5000` al config del pool.
-- **Esfuerzo:** 1 línea.
+- `connectionTimeoutMillis: 5_000` agregado al pool. Ver ADR-037a.
 
-### 🔴 #2 — `migrate.ts` no advierte en producción
+### ✅ #2 — `migrate.ts` no advierte en producción — **RESUELTO 2026-05-06**
 
-- **Archivo:** `apps/api/src/scripts/migrate.ts`
-- **Problema:** si alguien corre `pnpm migrate` con `DATABASE_URL` apuntando a producción desde su laptop, las migrations se aplican sin confirmación. Riesgo de aplicar prematuramente o por accidente.
-- **Fix:** detectar si `DATABASE_URL` contiene `148.230` o si `NODE_ENV=production`, pedir confirmación interactiva (`--yes` para skip).
-- **Esfuerzo:** ~10 líneas.
+- Production guard interactivo: detecta hostname remoto o `NODE_ENV=production`, pide confirmación antes de `apply`/`bootstrap`. Flag `--yes` para CI. Ver ADR-037b.
+- **Acción pendiente:** agregar `--yes` al comando de deploy en HOSTINGER.md.
 
-### 🔴 #3 — Replay attack en `/auth/biometric/unlock`
+### ✅ #3 — Replay attack en `/auth/biometric/unlock` — **RESUELTO 2026-05-06**
 
-- **Archivo:** `apps/api/src/routes/auth.ts` (endpoint biometric/unlock)
-- **Problema:** el server valida el JTI del JWT contra `devices.biometric_token_jti`, pero **NO** valida ningún device fingerprint adicional. Si un atacante extrae el JWT del Keystore (requiere root), puede usarlo desde cualquier device.
-- **Fix:** registrar IP + user-agent al `enable`, comparar al `unlock`. Mismatch = audit log + rechazo, o pedir TOTP step-up.
-- **Esfuerzo:** ~20 líneas + nueva columna `devices.biometric_fingerprint TEXT`.
-- **Severidad:** alta porque biometric token vive 90 días.
+- User-agent guardado en `devices.biometric_fingerprint` al `enable`. Comparado en cada `unlock`; mismatch → audit `biometric.fingerprint_mismatch` + 401. Migration 015 agrega la columna. Ver ADR-037c.
+- **Limitación conocida:** UA es heurística débil; actualización de browser puede causar falso positivo. Usuario puede re-enable para resetear fingerprint. Devices con biometría activada pre-parche tienen `NULL` y no aplican el check hasta re-enable.
 
 ### 🟡 #4 — `migrate.ts` falla con `CREATE INDEX CONCURRENTLY`
 

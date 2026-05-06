@@ -821,10 +821,15 @@ export async function authRoutes(app: FastifyInstance) {
         { expiresIn: BIOMETRIC_TOKEN_TTL_SEC },
       );
 
+      // Guardar fingerprint al activar — se usará para comparar en /unlock
+      // y detectar uso del token desde otro device (parche #3 KNOWN_ISSUES).
       await pool.query(
-        `UPDATE devices SET biometric_enabled = true, biometric_token_jti = $1
-          WHERE id = $2`,
-        [jti, deviceId],
+        `UPDATE devices
+            SET biometric_enabled = true,
+                biometric_token_jti = $1,
+                biometric_fingerprint = $2
+          WHERE id = $3`,
+        [jti, (req.headers["user-agent"] as string) ?? null, deviceId],
       );
 
       await audit(req, {
@@ -873,10 +878,12 @@ export async function authRoutes(app: FastifyInstance) {
       platform: string;
       biometric_enabled: boolean;
       biometric_token_jti: string | null;
+      biometric_fingerprint: string | null;
     }>(
       `SELECT u.id AS user_id, d.id AS device_id, u.username, u.display_name,
               u.role, u.status AS user_status, d.status AS device_status,
-              d.device_name, d.platform, d.biometric_enabled, d.biometric_token_jti
+              d.device_name, d.platform, d.biometric_enabled, d.biometric_token_jti,
+              d.biometric_fingerprint
          FROM devices d
          JOIN users u ON u.id = d.user_id
         WHERE d.id = $1 AND u.id = $2`,
@@ -897,6 +904,29 @@ export async function authRoutes(app: FastifyInstance) {
         action: "biometric.unlock_revoked",
       });
       return reply.code(401).send({ error: "biometric_revoked" });
+    }
+
+    // Comparar user-agent del unlock con el registrado al activar.
+    // Si difieren completamente, lo más probable es que el JWT fue extraído
+    // del Keystore (requiere root) y se está usando desde otro device.
+    // NULL en biometric_fingerprint = token emitido antes de este parche;
+    // lo dejamos pasar y se actualizará al próximo enable.
+    // Nota: un update de browser puede cambiar el UA levemente y causar un
+    // falso positivo; el usuario puede desactivar/reactivar biometría para
+    // resetear el fingerprint.
+    const requestUa = (req.headers["user-agent"] as string) ?? null;
+    if (row.biometric_fingerprint && requestUa && row.biometric_fingerprint !== requestUa) {
+      await audit(req, {
+        userId: row.user_id,
+        deviceId: row.device_id,
+        action: "biometric.fingerprint_mismatch",
+        metadata: {
+          platform: row.platform,
+          stored: row.biometric_fingerprint,
+          received: requestUa,
+        },
+      });
+      return reply.code(401).send({ error: "biometric_fingerprint_mismatch" });
     }
 
     await audit(req, {
