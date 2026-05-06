@@ -28,7 +28,7 @@ const config: CapacitorConfig = {
     // usuario navega dentro de la app, sigue siendo todo el mismo
     // origin → cookies / localStorage / IndexedDB persisten igual que
     // en un browser normal.
-    url: "https://chat.148-230-82-52.sslip.io",
+    url: "https://euromex.xyz",
     cleartext: false,
     androidScheme: "https",
   },

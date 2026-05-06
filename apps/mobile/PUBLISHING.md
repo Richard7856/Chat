@@ -44,7 +44,7 @@ quieres pasar a producción.
    - **Declaration**: marca las casillas (políticas de Google + COPPA + ads)
 3. **Set up your app** (sección):
    - Privacy policy URL: tendrás que publicar una. **Sugerencia**: hostea un
-     `privacy.html` en tu propio dominio (`https://chat.148-230-82-52.sslip.io/privacy`)
+     `privacy.html` en tu propio dominio (`https://euromex.xyz/privacy`)
      con el texto mínimo: qué datos recolectas (mínimos por E2EE), cómo los
      usas (solo para ofrecer el servicio), retención (mientras la cuenta
      esté activa), contacto (email del admin).

@@ -125,7 +125,7 @@ pnpm cap:open:android
 # se abre Android Studio → click Run (Shift+F10)
 ```
 
-El WebView va a cargar `https://chat.148-230-82-52.sslip.io` directo
+El WebView va a cargar `https://euromex.xyz` directo
 (configurado en `capacitor.config.ts`). Cualquier cambio en `apps/web`
 que ya esté deployado en el VPS se ve sin reconstruir el APK.
 

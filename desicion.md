@@ -138,6 +138,12 @@ sudo systemctl start euromex-backup.service
   Después el flujo de deploy se simplifica a `git pull && pnpm install
   && pnpm --filter @euromex/api migrate && cd apps/web && pnpm build
   && systemctl restart …`.
+- **Migración a `euromex.xyz` en curso (2026-05-05):** dominio dedicado
+  regalado por Hostinger. Código del repo ya apunta al nuevo dominio
+  (`apps/mobile/capacitor.config.ts`, configs Capacitor, placeholders
+  HTML, docs). Pendiente: configurar DNS en Hostinger + actualizar
+  `.env` y Traefik labels en VPS + rebuild + cert LE + rebuild APK.
+  Ver entrada del Historial.
 - **Última actualización:** 2026-05-05
 - **Branch activa:** `claude/private-chat-mac-auth-e9QYn`
   ⚠️ El VPS debe estar en esta rama: `git checkout claude/private-chat-mac-auth-e9QYn`
@@ -233,6 +239,65 @@ pendiente de aprobación de directivos de Euromex. **Cutover es ~3 comandos de
    - Rotación de claves E2EE tras compromiso de dispositivo.
 
 ## Historial de decisiones
+
+### [2026-05-05] Migración de dominio: `chat.148-230-82-52.sslip.io` → `euromex.xyz`
+
+- **Contexto:** la app está a punto de subirse a Play Store / App Store. El
+  dominio `sslip.io` tiene el IP del VPS hardcoded (`148-230-82-52` →
+  `148.230.82.52`); cualquier cambio futuro de IP rompería todos los APKs
+  instalados sin remedio. Antes del primer release público, hay que
+  migrar a un dominio propio.
+- **Por qué NO `chat.grupoeuromex.com`:** intentamos usar el dominio
+  corporativo, pero Hostinger DNS tiene un bug estructural: los A records
+  para subdominios NO se publican en sus nameservers `ns1/ns2.dns-parking.com`
+  (verificado preguntando directo al NS autoritativo). Probamos:
+  1. A records directos en Hostinger → no propagan
+  2. Borrar el ALIAS `chat → cdn.hstgr.net` que Hostinger metía
+     automáticamente → siguen sin propagar
+  3. Subdomain delegation a he.net via NS records → Hostinger no permite
+     tipo NS en zonas de subdominios (limitación del plan)
+  4. Cloudflare full domain → posible pero requería mover NS del dominio
+     corporativo, con riesgo de romper web/correo de la empresa
+- **Decisión:** **comprar dominio dedicado**. Hostinger regaló `euromex.xyz`
+  por 1 año al cliente. Es mejor que usar el corporativo porque:
+  - **Zero riesgo** al sitio web/correo de Grupo Euromex (dominio
+    independiente)
+  - **Profesional** vs alternativas gratis (`*.duckdns.org`, `*.tk`)
+  - **Apex usable** (`euromex.xyz`) sin pelear con CNAME flattening
+  - **Costo despreciable** vs $99/año Apple Developer + $25 Play Console
+- **Topología elegida — Opción A (chat en apex):**
+  - `euromex.xyz` → web del chat (Next.js 15 detrás de Traefik)
+  - `api.euromex.xyz` → API Fastify + Socket.IO
+  - `www.euromex.xyz` → CNAME al apex (redirección clásica)
+- **Files actualizados (8):** `apps/mobile/capacitor.config.ts`,
+  `apps/mobile/ios/App/App/capacitor.config.json`,
+  `apps/mobile/android/app/src/main/assets/capacitor.config.json`
+  (autogenerado pero commiteado),
+  `apps/mobile/public/index.html`,
+  `apps/mobile/ios/App/App/public/index.html`,
+  `apps/mobile/android/app/src/main/assets/public/index.html`,
+  `apps/mobile/PUBLISHING.md`, `apps/mobile/README.md`,
+  `infra/traefik/euromex.yml` (referencia, no usada en VPS).
+- **Cambios pendientes en VPS** (operacionales, no van al repo):
+  - `apps/api/.env` → `CORS_ORIGIN=https://euromex.xyz`,
+    `WEB_BASE_URL=https://euromex.xyz`
+  - `apps/web/.env.local` → `NEXT_PUBLIC_API_BASE=https://api.euromex.xyz`
+  - `infra/traefik-proxies/docker-compose.yml` → labels
+    `Host(\`euromex.xyz\`)` y `Host(\`api.euromex.xyz\`)`
+  - Rebuild web + restart services + esperar cert LE (~30s)
+  - Verificar con `curl -I https://euromex.xyz` y
+    `curl -I https://api.euromex.xyz/health`
+- **Riesgo posible repetido:** si Hostinger DNS tiene el MISMO bug en
+  `euromex.xyz` (no publicar A records), plan B es Cloudflare DNS para
+  ESTE dominio dedicado solamente — sin riesgo al corporativo. Pero
+  como `euromex.xyz` es dominio fresco sin records previos, el bug
+  podría no manifestarse.
+- **Limpieza pendiente:**
+  - Borrar la zone `chat.grupoeuromex.com` huérfana en he.net (la creada
+    durante el intento de subdomain delegation).
+  - Borrar el TXT `dnshenet-key` y los A records de `chat`/`api.chat` en
+    la zona DNS de `grupoeuromex.com` en Hostinger (residuos de los
+    intentos fallidos).
 
 ### [2026-05-05] Fase 28 — Tracker de migrations + runner CLI
 

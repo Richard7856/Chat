@@ -6,7 +6,7 @@
 #        docker inspect root-traefik-1 \
 #          --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
 #      Busca el mount que apunte a /etc/traefik, /dynamic o similar.
-#   2. Reemplaza TODOS los `chat.example.com` y `api.chat.example.com`
+#   2. Reemplaza TODOS los `euromex.xyz` y `api.euromex.xyz`
 #      por tus dominios reales.
 #   3. Reemplaza `letsencrypt` por el nombre de tu certResolver si tu
 #      Traefik usa otro (el default suele ser 'letsencrypt' o 'myresolver').
@@ -27,7 +27,7 @@ http:
   # ==========================================================================
   routers:
     euromex-web:
-      rule: "Host(`chat.example.com`)"
+      rule: "Host(`euromex.xyz`)"
       entryPoints:
         - websecure
       service: euromex-web
@@ -38,7 +38,7 @@ http:
         - euromex-rate-limit
 
     euromex-api:
-      rule: "Host(`api.chat.example.com`)"
+      rule: "Host(`api.euromex.xyz`)"
       entryPoints:
         - websecure
       service: euromex-api
@@ -50,7 +50,7 @@ http:
 
     # Redirect HTTP → HTTPS (si tu Traefik aún no tiene uno global)
     euromex-web-http:
-      rule: "Host(`chat.example.com`) || Host(`api.chat.example.com`)"
+      rule: "Host(`euromex.xyz`) || Host(`api.euromex.xyz`)"
       entryPoints:
         - web
       service: euromex-web
@@ -107,7 +107,7 @@ http:
           style-src 'self' 'unsafe-inline';
           img-src 'self' data: blob:;
           font-src 'self' data:;
-          connect-src 'self' https://api.chat.example.com wss://api.chat.example.com;
+          connect-src 'self' https://api.euromex.xyz wss://api.euromex.xyz;
           worker-src 'self' blob:;
           manifest-src 'self';
           object-src 'none';
