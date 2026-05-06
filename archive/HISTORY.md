@@ -1,8 +1,28 @@
-# desicion.md — Bitácora de decisiones y progreso
+# archive/HISTORY.md — Bitácora histórica (referencia, NO source of truth)
 
-> **Lee esto primero al retomar el proyecto.** Es la fuente única de verdad
-> sobre qué se ha decidido, por qué, y qué sigue. Cada commit significativo
-> debe agregar una entrada aquí.
+> ⚠️ **DEPRECADO desde 2026-05-06.** Este archivo se preserva como referencia
+> histórica completa, pero ya **no es la fuente de verdad** del proyecto. Si
+> retomas trabajo aquí, lee primero los archivos en la raíz del repo:
+>
+> 1. [`PROJECT_BRIEF.md`](../PROJECT_BRIEF.md) — visión, stack, roadmap, comandos top
+> 2. [`DECISIONS.md`](../DECISIONS.md) — ADRs detallados (40+) por categoría
+> 3. [`KNOWN_ISSUES.md`](../KNOWN_ISSUES.md) — parches pendientes + edge cases + hardening
+> 4. [`HOSTINGER.md`](../HOSTINGER.md) — runbook operacional VPS
+>
+> **Nuevas decisiones van a `DECISIONS.md`**, NO aquí. Este archivo se mantiene
+> únicamente para preservar el contexto cronológico de las primeras 28 fases
+> (2026-04-17 a 2026-05-05), por si en el futuro alguien necesita ver "qué se
+> pensó en tal fecha y por qué".
+>
+> Antes se llamaba `desicion.md` (con typo, en la raíz). El typo se preserva
+> aquí dentro de las entradas históricas para no romper referencias.
+
+---
+
+# desicion.md (histórico) — Bitácora de decisiones y progreso
+
+> Sección original conservada para contexto histórico. NO actualizar — usa los
+> archivos de la raíz del repo.
 
 ## Onboarding rápido (para retomar en sesión nueva)
 

@@ -4,22 +4,24 @@ Chat interno self-hosted para Grupo Euromex. Sustituye el uso de WhatsApp para
 hablar de proyectos, números e ideas. Acceso solo por invitación, encriptación
 de extremo a extremo, y deploy en VPS propio.
 
-> **Importante:** antes de retomar trabajo aquí, lee `desicion.md` — es la
-> fuente única de verdad sobre decisiones y progreso.
+> **Importante:** antes de retomar trabajo aquí, lee primero
+> [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md) (visión + stack + roadmap),
+> luego [`DECISIONS.md`](DECISIONS.md) (ADRs detallados) y
+> [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) (parches abiertos + edge cases).
+> El histórico cronológico completo está en [`archive/HISTORY.md`](archive/HISTORY.md).
 
-## Stack (Fase 1)
+## Stack
 
 - Monorepo: **pnpm workspaces + Turbo**
-- Backend: **Node.js 22 + TypeScript + Fastify** (`apps/api`)
-- Frontend: **Next.js 15 + React** (`apps/web`)
-- Infra local: **Docker Compose** con **PostgreSQL 16** + **Redis 7**
-  (`infra/`)
-- Tipos/schemas compartidos: **Zod** (`packages/shared`)
+- Backend: **Node.js 22 + TypeScript + Fastify** + Socket.IO (`apps/api`)
+- Frontend: **Next.js 15 + React + Tailwind + shadcn/ui** (`apps/web`)
+- Mobile: **Capacitor** (Android, scaffold iOS) (`apps/mobile`)
+- Infra: **Docker Compose** con **PostgreSQL 16** + **Redis 7** (`infra/`)
+- E2EE: **NaCl (tweetnacl)** — wrappers en `packages/crypto`
+- Schemas compartidos: **Zod** (`packages/shared`)
+- Auth: Argon2id + TOTP obligatorio + JWT firmado + biometría mobile (Capacitor)
 
-Crypto E2EE (Signal Protocol), React Native mobile y el panel admin llegan en
-fases posteriores — ver el plan aprobado en
-`/root/.claude/plans/te-comento-a-grandes-buzzing-wand.md` y las entradas en
-`desicion.md`.
+Detalle de cada decisión en [DECISIONS.md](DECISIONS.md).
 
 ## Requisitos
 
@@ -61,13 +63,21 @@ pnpm dev
 
 ```
 apps/
-  api/        Fastify + (Socket.IO en Fase 3)
-  web/        Next.js (usuario final)
+  api/        Fastify + Socket.IO + scripts CLI (create-admin, migrate, etc.)
+  web/        Next.js 15 + Tailwind + shadcn/ui (PWA)
+  mobile/     Wrapper Capacitor Android (scaffold iOS)
 packages/
-  shared/     Schemas Zod y tipos compartidos
+  shared/     Schemas Zod compartidos
+  crypto/     Wrappers NaCl (E2EE primitivas)
 infra/
-  docker-compose.yml
-desicion.md   Bitácora de decisiones y progreso
+  docker-compose.yml         (Postgres + Redis locales)
+  traefik/                   (config de referencia, no usada en VPS)
+
+PROJECT_BRIEF.md             Visión + stack + roadmap (start here)
+DECISIONS.md                 ADRs detallados (40+ decisiones)
+KNOWN_ISSUES.md              Parches pendientes + edge cases
+HOSTINGER.md                 Runbook operacional VPS
+archive/HISTORY.md           Bitácora cronológica histórica (1900+ líneas)
 ```
 
 ## Branch de desarrollo

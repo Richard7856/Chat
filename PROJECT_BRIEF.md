@@ -1,6 +1,12 @@
 # Project Brief — Euromex Chat
 
-> **Para sesiones nuevas:** pega este archivo (o el link) al inicio de la conversación. Te da el contexto necesario sin tener que releer todo `desicion.md` (1900+ líneas).
+> **Para sesiones nuevas:** pega este archivo (o el link) al inicio de la conversación. Te da el contexto operacional necesario sin tener que releer historiales largos.
+>
+> **Documentación complementaria:**
+> - [DECISIONS.md](DECISIONS.md) — el razonamiento detallado de cada ADR (40+ decisiones, formato Contexto/Decisión/Alternativas/Riesgos)
+> - [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — parches críticos pendientes, edge cases conocidos, hardening propuesto
+> - [HOSTINGER.md](HOSTINGER.md) — runbook operacional (deploy, backup, troubleshooting)
+> - [archive/HISTORY.md](archive/HISTORY.md) — bitácora histórica completa por fecha (1900+ líneas)
 
 ---
 
@@ -29,67 +35,26 @@ Chat E2EE self-hosted para **Grupo Euromex** (insurance / distribución, México
 
 ---
 
-## 3. Decisiones arquitectónicas (ADRs)
+## 3. Decisiones arquitectónicas (resumen)
 
-### ADR-001 — PWA + Capacitor en lugar de React Native / Expo
-- **Contexto:** mobile cross-platform. Equipo conoce React/Next.js, no React Native nativo.
-- **Decisión:** PWA con Next.js + wrapper Capacitor para Android. JS/CSS/HTML viven en `apps/web`; el APK es shell delgado que carga `server.url` en WebView.
-- **Alternativas:** React Native + Expo (curva nueva), TWA (no permite plugins nativos como `FLAG_SECURE`), Cordova (deprecado).
-- **Riesgos:** WebView ≠ browser — algunos APIs pueden comportarse distinto. Mitigación: feature-detect siempre.
+40+ decisiones documentadas en formato ADR (Contexto / Decisión / Alternativas / Riesgos). Las más importantes:
 
-### ADR-002 — `tsx` en producción (no compilado a `dist/`)
-- **Contexto:** los workspace packages `@euromex/shared` y `@euromex/crypto` exportan `.ts` directamente.
-- **Decisión:** API corre con `tsx src/server.ts`. Workspace packages no se construyen.
-- **Alternativas:** agregar build step a shared/crypto (más config). Compilar todo a `dist/` (más latencia de cold-start).
-- **Riesgos:** ~200ms más de cold-start. Si pasamos a serverless, hay que migrar.
+| ID | Decisión | Severidad |
+|---|---|---|
+| ADR-001 | Stack Fastify + Next.js + Postgres + Redis | Foundational |
+| ADR-002 | Monorepo pnpm sin hoist | Foundational |
+| ADR-006 | E2EE con NaCl crypto_box (no Signal protocol) | Foundational |
+| ADR-007 | Encriptación por device con cache de claves | Foundational |
+| ADR-009 | Adjuntos restringidos = split de envelopes | Crítica para HR docs |
+| ADR-018 | Biometría = unlock local, NO reemplazo de TOTP | Crítica para UX mobile |
+| ADR-019 | Coexistencia con infra del cliente | Operacional |
+| ADR-020 | Migrations append-only con runner CLI | Operacional |
+| ADR-022 | PWA + Capacitor (no React Native) | Mobile foundational |
+| ADR-026 | Package mobile renombrado a `com.grupoeuromex.chat` | Mobile foundational |
+| ADR-034 | Migración a dominio dedicado `euromex.xyz` | Infraestructura |
+| ADR-036 | Edit/borrar mensajes con auditoría preservada | Compliance |
 
-### ADR-003 — E2EE con NaCl `crypto_box` (no Signal protocol completo)
-- **Contexto:** chat de empresa <25 personas, no app pública.
-- **Decisión:** `crypto_box` + un envelope por device destinatario. Sin Double Ratchet ni X3DH completo.
-- **Alternativas:** libsignal (overkill para 25 personas, complica multi-device), Matrix Olm/Megolm.
-- **Riesgos:** sin forward secrecy completa — un device comprometido puede leer mensajes pasados que tenía. Aceptable para el threat model. Documentado en `desicion.md` y en el privacy policy.
-
-### ADR-004 — Avisos de seguridad solo a "super admins"
-- **Contexto:** los avisos de seguridad (download / watermark / banner) son audit events sensibles que no todos los admins necesitan ver.
-- **Decisión:** flag `users.receives_security_alerts` per-user, desacoplado del `role='admin'`. Solo true ven los system messages.
-- **Alternativas:** todos los admins (más simple pero mezcla privilegios), por conversación (más granular pero más UX).
-- **Riesgos:** si nadie tiene el flag, los avisos se generan pero nadie los lee. El bootstrap admin lo trae activo por default.
-
-### ADR-005 — Adjuntos restringidos = split de envelopes E2EE
-- **Contexto:** adjuntos con acceso restringido a un subset de la conversación. La clave AES viaja en el plaintext del mensaje.
-- **Decisión:** cliente cifra DOS payloads — `AttachmentPayload` (con fileKey/fileIv) para devices allowed, `AttachmentRestrictedPayload` (sin keys) para no-allowed. Cada device decifra su propio envelope.
-- **Alternativas:** server controla acceso (rompe E2EE), envelope único con re-key dinámico (más complejo).
-- **Riesgos:** si un device es allowed y luego revocado, ya tiene la clave AES — el adjunto queda accesible offline. Mitigación documentada.
-
-### ADR-006 — Migrations con runner CLI, append-only
-- **Contexto:** incidente 2026-05-05 — migrations 010-012 nunca aplicadas en VPS aunque el código las requería desde Fase 24.
-- **Decisión:** tabla `schema_migrations(version, checksum, applied_at, applied_by)` + runner `apps/api/src/scripts/migrate.ts` con comandos `status`/`apply`/`bootstrap`/`dry-run`. Migrations son **append-only**: cambiar un `.sql` aplicado emite `CHECKSUM MISMATCH` pero no re-aplica.
-- **Alternativas:** `db-migrate` o `node-pg-migrate` (deps grandes), Markdown con metadata embedida (sobreingeniería).
-- **Riesgos:** runner depende de `DATABASE_URL` puro — si alguien lo invoca sin source del `.env`, falla con mensaje claro.
-
-### ADR-007 — Biometría = unlock local, NO reemplazo de TOTP
-- **Contexto:** UX moderna requiere "iniciar con huella". Pero la biometría es local — el server nunca la ve.
-- **Decisión:** server emite un `biometric_unlock_token` (JWT 90d) tras validar TOTP. Cliente lo guarda en Keystore/Keychain cifrado con biometría. El token ES la prueba en futuros logins. JTI rotable para revocación instantánea.
-- **Alternativas:** WebAuthn / Passkeys (más estándar pero más complejo, considerado para Fase 29), guardar password en Keystore (pésimo).
-- **Riesgos:** si JWT 90d se filtra desde el Keystore (root del device), atacante tiene session por 90 días. Mitigación: admin puede revocar device → unlock falla.
-
-### ADR-008 — Subdomain delegation rechazado, dominio dedicado
-- **Contexto:** `chat.grupoeuromex.com` no se publicaba (bug Hostinger DNS estructural). 4 alternativas probadas (A records directos, borrar ALIAS, NS delegation a he.net, Cloudflare full domain).
-- **Decisión:** dominio dedicado `euromex.xyz` (regalado por Hostinger, $0/año primer año). Topología: chat en apex, `api` en subdominio.
-- **Alternativas:** Cloudflare full domain (riesgo al web/correo corporativo), seguir con sslip.io (rompe si cambia IP del VPS), pagar dominio nuevo $10/año.
-- **Riesgos:** dominio gratis primer año — al renovar, evaluar si vale la pena pagar o migrar. Si Hostinger DNS también falla con `euromex.xyz`, plan B es Cloudflare DNS solo para este dominio (sin riesgo al corporativo).
-
-### ADR-009 — Coexistencia con n8n / Traefik / email-admin del cliente
-- **Contexto:** VPS también corre infra del cliente.
-- **Decisión:** NO tocar `root-*` containers. NO `apt upgrade -y`. NO `ufw --force enable` sin permiso. Traefik del cliente sirve nuestros containers via Docker labels.
-- **Alternativas:** VPS dedicado (más caro), Docker network propia (más config).
-- **Riesgos:** un cambio de Traefik del cliente puede romper nuestros routings. Mitigación: monitoreo manual + audit log de status checks.
-
-### ADR-010 — Storage filesystem local, NO MinIO/S3
-- **Contexto:** adjuntos cifrados E2EE (server no los puede leer).
-- **Decisión:** disk local (`/opt/euromex/storage/`, mode 700). Cliente sube blob, server solo guarda referencia.
-- **Alternativas:** MinIO self-hosted (more infra), S3 (costo + lock-in cloud).
-- **Riesgos:** filesystem se llena → bloquea uploads. Mitigación: monitoreo de espacio + límite `MAX_ATTACHMENT_BYTES`.
+**📖 Lee el contexto completo en [DECISIONS.md](DECISIONS.md)** — ADRs agrupados por categoría (Arquitectura / E2EE / Auth / DB / Mobile / Adjuntos / Infra / DNS / UX / Decisiones rechazadas).
 
 ---
 
@@ -123,8 +88,8 @@ Formato: `type(scope): description`
 - Ejemplo: `feat(auth): C3+C4 — usuario puede cambiar password y rotar 2FA`
 - Co-Author tag al final si aplica
 
-### DECISIONS / desicion.md
-Cada decisión técnica no trivial → entrada en `desicion.md`:
+### Bitácora de decisiones
+Cada decisión técnica no trivial → ADR nuevo en `DECISIONS.md`:
 ```markdown
 ## [YYYY-MM-DD] Título
 **Contexto:** qué problema disparó la decisión
@@ -261,9 +226,10 @@ server → client:
 
 ## 8. Cómo retomar el proyecto
 
-1. **Lee `desicion.md`** — fuente de verdad del histórico de decisiones (1900+ líneas, ordenado descendente).
-2. **`HOSTINGER.md`** — runbook operacional (deploy, backup, troubleshooting, check pre-flight de migrations).
-3. **Estado actual:** ver sección "Estado actual" del `desicion.md` (líneas 124-145 aprox).
+1. **Lee este archivo (`PROJECT_BRIEF.md`)** primero — visión + stack + roadmap. Luego [`DECISIONS.md`](DECISIONS.md) (razonamiento de cada decisión) y [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) (lo que está pendiente o roto).
+2. **`HOSTINGER.md`** — runbook operacional (deploy, backup, troubleshooting, runner de migrations).
+3. **Estado actual:** sección 9 "Roadmap" de este archivo (lista de fases 1-28 + pendientes inmediatos).
+4. **Detalle histórico:** `archive/HISTORY.md` (bitácora cronológica original, 1900+ líneas, descendente).
 4. **Comandos top:**
    ```bash
    # Estado servicios VPS
@@ -289,7 +255,83 @@ server → client:
 
 ---
 
-## 9. Workflow del desarrollo (acordado 2026-05-06)
+## 9. Roadmap
+
+### ✅ Completado (Fases 1-28)
+
+| # | Fase | Qué |
+|---|---|---|
+| 1-7 | Foundational | Auth básico, DB, Redis, Socket.IO, deploy producción HTTPS, backups |
+| 8.1, 8.2 | Avisos seguridad | Watermark, banner, super-admins watchers |
+| 9 | Admin web | Panel users, invitaciones, audit log |
+| 10 | Organigrama | Cargo, depto, jefe, árbol visual |
+| 12 | Edit perfil admin | Modal displayName + email |
+| 13 | Re-auth TOTP | Soft logout, multi-dispositivo |
+| 14 | Docs library | Adjuntos restringidos + PIN argon2 |
+| 15 | Activities + Tasks | RSVP, multi-asignados, cards interactivos |
+| 16-17 | Calendar + galería | Vista mensual + galería medios + saved messages |
+| 18-19 | Presence + Push | ✓✓ leído, online status, web push notifications, @mentions |
+| 20 | Calendar semanal | Toggle vista semanal con polish (botón Hoy + hora) |
+| 23a, 23b | Mobile | APK Capacitor + FLAG_SECURE + multi-device backfill |
+| 24 | Permisos granulares | 6 flags per-user (download, share, groups, invite, calls, max_mb) |
+| 25 | Edit/borrar mensajes | Soft delete + edit history con auditoría preservada |
+| 26 | C3+C4 + I4+I5 polish | Cambio password, rotación TOTP, scroll-up paginación |
+| 27 | Biometric UX | Login con huella + step-up admin (mobile only) |
+| 28 | Migrations runner | Tabla schema_migrations + CLI `pnpm migrate` |
+
+### 🚀 Pendientes inmediatos (operacionales)
+
+1. **DNS de `euromex.xyz` propagando** al TLD `.xyz` (en curso, ~30-60 min después de NS asignado)
+2. **Deploy de Fase 28 al VPS** + `pnpm migrate:bootstrap` UNA SOLA VEZ
+3. **Migrar config a `euromex.xyz`** en VPS (`.env` files + Traefik labels + rebuild + cert LE)
+4. **Rebuild APK con nuevo dominio** (`pnpm cap sync android && pnpm build:android:debug`)
+5. **Validar APK en device físico** (12-step smoke test, ver [KNOWN_ISSUES.md #10](KNOWN_ISSUES.md))
+6. **Pushear los 6+ commits locales** a origin
+7. **Aplicar parches críticos** del [análisis de robustez](KNOWN_ISSUES.md#1-parches-críticos-pendientes) (#1-#3 antes del primer release)
+
+### 🎯 Próximo sprint propuesto
+
+**Opción A — Fase 29: WebAuthn / Passkeys** (~3 sesiones, propuesto 2026-05-06)
+- Motivación: app real cross-platform (web + mobile) con biometría unificada
+- Reemplaza/complementa ADR-018 con estándar W3C
+- Funciona en Mac (Touch ID), Windows (Hello), iOS (Face ID/Touch ID), Android
+- Backend: `@simplewebauthn/server` + tabla `webauthn_credentials`
+- Frontend: `@simplewebauthn/browser` + flujos register/authenticate
+
+**Opción B — I1 Búsqueda client-side** (~3 sesiones, audit 2026-05-03)
+- Caso de uso #1 en chat empresarial ("dónde estaba ese contrato")
+- Como E2EE, búsqueda DEBE ser client-side: descifrar al cargar + buscar en memoria + IndexedDB
+- Indexar mensajes ya descifrados en `localforage` o IndexedDB con búsqueda fuzzy
+
+**Opción C — Hardening operacional** (~1-2 sesiones)
+- Aplicar parches #1-#7 de [KNOWN_ISSUES.md](KNOWN_ISSUES.md)
+- Tests Vitest para `packages/shared` y `packages/crypto`
+- Monitoring básico (uptime-kuma)
+
+### 🔮 Backlog (audit 2026-05-03 + propuestas)
+
+- I2 Reacciones a mensajes (emoji, ~1 sesión)
+- I3 Replies / quote (~2 sesiones)
+- M1 Export de chat (ZIP con JSON descifrado, ~2 sesiones)
+- M2 FCM nativo en APK (~2 sesiones)
+- M3 iOS publishing (~3 sesiones — scaffold listo, falta wire-up Xcode + screenshots + cuenta Apple Dev verificada)
+- M4 Tests Vitest + Playwright (~4 sesiones)
+- Fase 11 SSO/JWT externo — bloqueado en definir scope con cliente
+
+### ❌ Decidido NO hacer
+
+- Voice/video calls (diferido cliente)
+- Federación tipo Matrix
+- Cifrado homomórfico para búsqueda server-side
+- Forward secrecy completa (Double Ratchet)
+- Multi-tenant SaaS
+- Auto-borrado de mensajes / disappearing messages
+
+Razones detalladas en [DECISIONS.md sección 10](DECISIONS.md#10-decisiones-rechazadas) y [PROJECT_BRIEF.md sección 7](#7-lo-que-no-está-en-scope-decidido-no-hacer).
+
+---
+
+## 10. Workflow del desarrollo (acordado 2026-05-06)
 
 ### Antes de confirmar código nuevo, responder en cada PR/feature:
 1. **¿Qué casos edge no estás manejando?** (lista explícita, no "muchos")
@@ -307,6 +349,11 @@ Estas 4 preguntas son obligatorias antes del commit final de cualquier feature �
 ---
 
 **Última actualización:** 2026-05-06
-**Branch activa:** `claude/private-chat-mac-auth-e9QYn`
+**Branch activa:** `claude/private-chat-mac-auth-e9QYn` (es la "main" de este repo)
 **Última fase completada:** Fase 28 — Tracker de migrations
-**En curso:** migración a `euromex.xyz` (DNS propagating)
+**En curso:** migración a `euromex.xyz` (DNS propagating al TLD `.xyz`)
+**Documentación complementaria:**
+- [DECISIONS.md](DECISIONS.md) — ADRs detallados
+- [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — parches + edge cases + hardening
+- [HOSTINGER.md](HOSTINGER.md) — runbook operacional
+- [archive/HISTORY.md](archive/HISTORY.md) — histórico cronológico (fuente original)

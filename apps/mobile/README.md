@@ -6,9 +6,8 @@ WebView que carga la web de producción y ofrece capacidades que el
 browser no expone, principalmente `FLAG_SECURE` para bloquear
 screenshots a nivel OS.
 
-> **Por qué Capacitor en lugar de TWA**: ver entrada 2026-05-01 de
-> `desicion.md`. Resumen: TWA no permite `FLAG_SECURE` y el usuario
-> requiere "control total" sobre quién puede tomar capturas.
+> **Por qué Capacitor en lugar de TWA**: ver [DECISIONS.md ADR-022](../../DECISIONS.md#adr-022--pwa--capacitor-en-lugar-de-react-native--expo-2026-04-17-fase-6).
+> Resumen: TWA no permite `FLAG_SECURE` y el cliente requiere "control total" sobre quién puede tomar capturas.
 
 ---
 
