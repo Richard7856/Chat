@@ -1,17 +1,17 @@
 # Configuración dinámica de Traefik para Euromex Chat.
 #
 # Cómo se usa:
-#   1. Copia este archivo a donde tu Traefik lee dynamic configs. Para
-#      encontrar el path:
-#        docker inspect root-traefik-1 \
-#          --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
-#      Busca el mount que apunte a /etc/traefik, /dynamic o similar.
+#   1. Copia este archivo al directorio dinámico de Traefik (el que está
+#      montado como /dynamic dentro del container).
 #   2. Reemplaza TODOS los `euromex.xyz` y `api.euromex.xyz`
 #      por tus dominios reales.
 #   3. Reemplaza `letsencrypt` por el nombre de tu certResolver si tu
 #      Traefik usa otro (el default suele ser 'letsencrypt' o 'myresolver').
 #   4. Traefik recarga automáticamente al detectar el archivo nuevo.
 #      Verifica con: docker logs root-traefik-1 --tail 40
+#
+# NOTA: este archivo NO puede contener expresiones con {{ }} en comentarios
+# porque Traefik lo parsea como Go template aunque sea YAML.
 #
 # Topología:
 #   Internet (443) → Traefik → http://172.17.0.1:3100 (web Next.js)
