@@ -348,10 +348,10 @@ Estas 4 preguntas son obligatorias antes del commit final de cualquier feature �
 
 ---
 
-**Última actualización:** 2026-05-06
+**Última actualización:** 2026-05-07
 **Branch activa:** `claude/private-chat-mac-auth-e9QYn` (es la "main" de este repo)
-**Última fase completada:** Fase 28 — Tracker de migrations
-**En curso:** migración a `euromex.xyz` (DNS propagating al TLD `.xyz`)
+**Última fase completada:** Fase 28 + parches críticos #1-#3 + deploy a `euromex.xyz`
+**Producción:** `https://euromex.xyz` ✅ live con cert LE · `https://api.euromex.xyz` ✅
 **Documentación complementaria:**
 - [DECISIONS.md](DECISIONS.md) — ADRs detallados
 - [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — parches + edge cases + hardening

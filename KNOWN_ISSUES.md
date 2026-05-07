@@ -57,22 +57,14 @@
 
 ## 2. Pendientes operacionales (no son bugs, son tareas)
 
-### #8 — Deploy de Fase 28 al VPS + bootstrap
+### ✅ #8 — Deploy de Fase 28 al VPS + bootstrap — **RESUELTO 2026-05-07**
 
-- **Estado:** código listo + commiteado (`16e792e`). Sin pushear.
-- **Acción requerida:** una vez DNS de `euromex.xyz` propague, hacer `git pull && pnpm install && cd apps/api && source .env && pnpm migrate:bootstrap` UNA SOLA VEZ. Después del bootstrap, `migrate:status` debe mostrar 14 applied.
+- Bootstrap corrido, 14 migrations registradas. `migrate:status` limpio.
 
-### #9 — Migración a `euromex.xyz` en VPS
+### ✅ #9 — Migración a `euromex.xyz` en VPS — **RESUELTO 2026-05-07**
 
-- **Estado:** código del repo apunta a nuevo dominio (commit `4d35f4b`). DNS asignado (`cosmos/nova.dns-parking.com`), propagación al TLD `.xyz` en curso.
-- **Acción requerida (cuando DNS resuelva):**
-  1. Editar `apps/api/.env` → `CORS_ORIGIN`, `WEB_BASE_URL`
-  2. Editar `apps/web/.env.local` → `NEXT_PUBLIC_API_BASE`
-  3. Editar `infra/traefik-proxies/docker-compose.yml` → labels Host()
-  4. Recrear containers Traefik
-  5. Build web + restart services
-  6. Verificar cert LE: `curl -I https://euromex.xyz`
-- **Detalle completo:** ver [PROJECT_BRIEF.md sección Roadmap](PROJECT_BRIEF.md).
+- DNS propagado. `.env` actualizados. Traefik configurado con file provider + `euromex.yml`. Cert LE emitido. `https://euromex.xyz` → HTTP/2 200. `https://api.euromex.xyz/health` → ok.
+- **Nota:** el Traefik del cliente usa solo provider Docker — se agregó `--providers.file.directory=/dynamic` + volumen `/root/traefik-dynamic`. El `euromex.yml` no puede tener expresiones `{{ }}` en comentarios (Traefik lo parsea como Go template).
 
 ### #10 — Validación funcional del APK debug en device físico
 
@@ -100,16 +92,9 @@
   - A `api.chat` (si aún existe)
   - ALIAS `chat → cdn.hstgr.net` si lo regeneró Hostinger automáticamente
 
-### #12 — Push de commits locales a origin
+### ✅ #12 — Push de commits locales a origin — **RESUELTO 2026-05-07**
 
-- **Estado:** 6 commits locales sin pushear:
-  - `e2f6595` docs: PROJECT_BRIEF.md
-  - `4d35f4b` chore(domain): migrar a euromex.xyz
-  - `16e792e` feat(infra): Fase 28 — runner de migrations
-  - `64a4698` docs: incidente migrations
-  - `d087133` build(mobile): wire-up plugin biometric
-  - (esta sesión va a agregar más con la reorganización de docs)
-- **Acción:** `git push origin claude/private-chat-mac-auth-e9QYn` (con confirmación).
+- Todos los commits pusheados. Branch en sync con origin.
 
 ### #13 — Reservar `com.grupoeuromex.chat` en Play Console
 
