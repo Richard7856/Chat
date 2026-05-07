@@ -35,10 +35,15 @@
  *   - Cámara apuntando a pantalla — fuera del scope de software DLP.
  */
 import { app, BrowserWindow, Menu, shell } from "electron";
+import path from "node:path";
 
 const REMOTE_URL = "https://euromex.xyz";
 const ALLOWED_HOSTS = new Set(["euromex.xyz", "api.euromex.xyz"]);
 const isDev = !app.isPackaged;
+
+// En dev el icono se carga desde build/icon.png. En producción electron-builder
+// embebe .icns (macOS) y .ico (Windows) en el bundle final, no se necesita aquí.
+const ICON_PATH = path.join(__dirname, "..", "build", "icon.png");
 
 // Single instance lock — DEBE ir antes de app.whenReady().
 // Si una instancia ya está corriendo, salimos inmediatamente; el listener
@@ -57,6 +62,7 @@ function createWindow(): void {
     minWidth: 800,
     minHeight: 600,
     title: "Euromex Chat",
+    icon: ICON_PATH,
     backgroundColor: "#0a0a0a",
     webPreferences: {
       // Aislamiento estricto. El renderer carga euromex.xyz como página web

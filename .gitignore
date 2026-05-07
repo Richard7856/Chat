@@ -9,6 +9,11 @@ build/
 .turbo/
 *.tsbuildinfo
 
+# Excepción: apps/desktop/build/ contiene buildResources de electron-builder
+# (icon.png y eventualmente .icns/.ico) — son fuente, no output.
+!apps/desktop/build/
+!apps/desktop/build/**
+
 # Env & secrets
 .env
 .env.local
