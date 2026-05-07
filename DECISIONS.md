@@ -370,6 +370,46 @@
 
 ---
 
+## ADR-038 · Fase D1 — Desktop app con Electron + DLP base (2026-05-07)
+
+- **Contexto:** los usuarios con browser pueden hacer screenshot, descargar adjuntos sin auditoría, copiar/pegar contenido, abrir DevTools, ver código fuente del chat. El web no tiene forma de evitarlo — el SO ve al browser como app de confianza general. La filtración de información es el riesgo #1 actual.
+- **Decisión:** desarrollar `apps/desktop` como Electron wrapper que carga la PWA remota (igual que el APK Android). Electron permite controlar el WebView a nivel proceso, lo que abre puertas a controles que el browser bloquea.
+
+### Qué incluye D1 (esta fase)
+  - `setContentProtection(true)` — screenshots y screen recording bloqueados a nivel OS (Quartz en macOS, DWM en Windows). Cubre Cmd+Shift+4, PrintScreen, y herramientas estándar de captura.
+  - DevTools cerrados forzosamente en producción — listener `devtools-opened` que invoca `closeDevTools()` inmediatamente.
+  - Menú contextual deshabilitado — sin "Save image as", sin "Inspect", sin "View source".
+  - Menú default de Electron removido en producción (`Menu.setApplicationMenu(null)`).
+  - Single instance lock — doble click del .exe enfoca la ventana existente en lugar de abrir duplicado.
+  - External links abren en browser del SO via `shell.openExternal` — sin posibilidad de navegar a sitios externos dentro de la app.
+  - `contextIsolation: true` + `nodeIntegration: false` + `webviewTag: false` — superficie de ataque mínima en el renderer.
+
+### Qué NO incluye D1 (planificado en fases siguientes)
+  - D2: control de descargas (`session.on('will-download')`)
+  - D3: User-Agent custom + filtering server-side
+  - D4: auto-update con `electron-updater`
+  - D5: bundle estático del web (cierre del acceso por browser)
+  - D6: code signing macOS + Windows + notarización
+  - D7: detección de OBS/screen sharing, watermark dinámico, clipboard control
+
+- **Alternativas:**
+  - **Tauri (Rust + native webview):** ~10MB vs ~150MB, performance superior, pero ecosistema menos maduro y sin equivalente directo de `setContentProtection`. Para 25 usuarios el peso del binario no importa.
+  - **Capacitor Electron (`@capacitor-community/electron`):** consistencia con `apps/mobile`, pero menos maduro y con menos APIs de DLP expuestas. Electron raw da control total.
+  - **PWA instalable estricta + Origin-Trial features:** no resuelve screenshots ni DevTools — Chrome no permite a la PWA bloquear esos.
+
+- **Riesgos / limitaciones aceptadas:**
+  - Sin firma de código → macOS Gatekeeper y Windows SmartScreen muestran warnings al instalar. Aceptable para validación interna; resuelto en D6.
+  - Pasar `--remote-debugging-port` al binario sigue funcionando (limitación conocida de Chromium). Mitigación parcial: requiere acceso local + admin. Resuelto parcialmente en D6 con code signing (impide modificar el .exe).
+  - Cámara apuntando a pantalla — fuera del scope de software DLP. Es un problema físico, se mitiga con políticas internas.
+  - Apps con privilegios de captura elevados en Windows (OBS con hooks especiales) pueden bypassear DWM. macOS sí los bloquea con `setContentProtection`. Plan: detección en D7.
+
+- **Próximos pasos:**
+  - Probar el binario en device físico macOS (Apple Silicon + Intel) y Windows 10/11
+  - Validar que `setContentProtection` efectivamente bloquea las herramientas de captura comunes
+  - Avanzar a D2 (control de descargas) una vez validada D1
+
+---
+
 ## ADR-037 · Parches de robustez y seguridad — migrate.ts + biometric/unlock (2026-05-06)
 
 ### ADR-037a · `connectionTimeoutMillis` en migrate.ts

@@ -1,0 +1,22 @@
+{
+  "name": "@euromex/desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Electron wrapper de Euromex Chat con DLP crítico (screenshots, DevTools, context menu).",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsc && electron .",
+    "dev": "tsc --watch & electron .",
+    "dist": "tsc && electron-builder",
+    "dist:mac": "tsc && electron-builder --mac",
+    "dist:win": "tsc && electron-builder --win",
+    "clean": "rm -rf dist release"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.6.3"
+  }
+}

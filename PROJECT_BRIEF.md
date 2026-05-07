@@ -350,8 +350,9 @@ Estas 4 preguntas son obligatorias antes del commit final de cualquier feature �
 
 **Última actualización:** 2026-05-07
 **Branch activa:** `claude/private-chat-mac-auth-e9QYn` (es la "main" de este repo)
-**Última fase completada:** Fase 28 + parches críticos #1-#3 + deploy a `euromex.xyz`
+**Última fase completada:** Fase D1 — desktop Electron shell con DLP base (screenshots, DevTools, context menu)
 **Producción:** `https://euromex.xyz` ✅ live con cert LE · `https://api.euromex.xyz` ✅
+**Roadmap Desktop activo:** D1 ✅ → D2 (download control) → D3 (UA filtering) → D4 (auto-update) → D5 (bundle estático) → D6 (code signing) → D7 (DLP avanzado)
 **Documentación complementaria:**
 - [DECISIONS.md](DECISIONS.md) — ADRs detallados
 - [KNOWN_ISSUES.md](KNOWN_ISSUES.md) — parches + edge cases + hardening
