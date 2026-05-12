@@ -8,12 +8,14 @@ import {
   EnableBiometricRequestSchema,
   EnrollBeginRequestSchema,
   EnrollCompleteRequestSchema,
+  ForcedPasswordChangeRequestSchema,
   LoginRequestSchema,
   ReauthRequestSchema,
   type AuthSuccessResponse,
   type BeginTotpRotationResponse,
   type EnableBiometricResponse,
   type EnrollBeginResponse,
+  type LoginChangeRequiredResponse,
   type MeResponse,
 } from "@euromex/shared";
 import { randomUUID } from "crypto";
@@ -307,7 +309,9 @@ export async function authRoutes(app: FastifyInstance) {
   // --------------------------------------------------------------------------
   // POST /auth/login — verifica password + TOTP, crea o reusa device
   // --------------------------------------------------------------------------
-  app.post("/auth/login", async (req, reply): Promise<AuthSuccessResponse> => {
+  app.post(
+    "/auth/login",
+    async (req, reply): Promise<AuthSuccessResponse | LoginChangeRequiredResponse> => {
     const parsed = LoginRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
@@ -322,8 +326,10 @@ export async function authRoutes(app: FastifyInstance) {
       totp_secret_enc: Buffer;
       role: "user" | "admin";
       status: string;
+      must_change_password: boolean;
     }>(
-      `SELECT id, username, display_name, password_hash, totp_secret_enc, role, status
+      `SELECT id, username, display_name, password_hash, totp_secret_enc, role, status,
+              must_change_password
          FROM users WHERE username = $1`,
       [username],
     );
@@ -348,6 +354,30 @@ export async function authRoutes(app: FastifyInstance) {
         metadata: { username },
       });
       return reply.code(401).send({ error: "invalid_totp" });
+    }
+
+    // Fase 30 — Si el admin reseteó la password recientemente, el user debe
+    // cambiarla ANTES de obtener sesión válida. El changeToken es un JWT
+    // corto (5 min) con claim `t: "password-change"` que SOLO sirve para
+    // /auth/password/forced. Cualquier otro endpoint protegido lo rechaza.
+    // No creamos device aquí — eso pasa en /auth/password/forced, después
+    // de que el user complete el cambio.
+    if (user.must_change_password) {
+      const changeToken = app.jwt.sign(
+        { t: "password-change", sub: user.id } as unknown as SessionClaims,
+        { expiresIn: "5m" },
+      );
+      await audit(req, {
+        userId: user.id,
+        action: "login.change_required",
+        metadata: { username },
+      });
+      return {
+        changeRequired: true,
+        changeToken,
+        username: user.username,
+        displayName: user.display_name,
+      };
     }
 
     // Reuso de device: si el cliente mandó un deviceId del hint local Y existe
@@ -606,6 +636,141 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.code(204).send();
     },
   );
+
+  // --------------------------------------------------------------------------
+  // Fase 30 — POST /auth/password/forced
+  //
+  // Cambio de password obligatorio tras un admin reset. Diferencias con
+  // /auth/password (Fase 26 C3):
+  //   - NO requiere `currentPassword` — la temp ya fue verificada en /auth/login.
+  //   - Acepta `changeToken` (JWT corto con claim t="password-change") en
+  //     lugar del JWT de sesión normal. Cualquier otro JWT es rechazado.
+  //   - Crea device + devuelve AuthSuccessResponse completa al finalizar,
+  //     por lo que el user queda logueado en una sola operación.
+  //
+  // El TOTP sigue siendo obligatorio: el segundo factor no se relaja por
+  // estar en flujo de reset.
+  // --------------------------------------------------------------------------
+  app.post("/auth/password/forced", async (req, reply): Promise<AuthSuccessResponse> => {
+    const parsed = ForcedPasswordChangeRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: "invalid_body", issues: parsed.error.issues });
+    }
+    const { changeToken, newPassword, totpToken, deviceName, platform } = parsed.data;
+
+    // 1) Validar el changeToken — debe ser un JWT firmado por nosotros con
+    //    claim t="password-change". El verify ya valida firma + expiry.
+    let claims: { t: string; sub: string };
+    try {
+      claims = app.jwt.verify(changeToken) as { t: string; sub: string };
+    } catch {
+      return reply.code(401).send({ error: "invalid_change_token" });
+    }
+    if (claims.t !== "password-change" || !claims.sub) {
+      return reply.code(401).send({ error: "invalid_change_token" });
+    }
+    const userId = claims.sub;
+
+    // 2) Cargar user + verificar que sigue requerido el cambio. Si el flag
+    //    ya está en false, alguien (otra sesión paralela, admin) ya completó
+    //    el cambio — rechazamos para evitar doble efecto.
+    const userRes = await pool.query<{
+      id: string;
+      username: string;
+      display_name: string;
+      totp_secret_enc: Buffer;
+      role: "user" | "admin";
+      status: string;
+      must_change_password: boolean;
+      password_hash: string;
+    }>(
+      `SELECT id, username, display_name, totp_secret_enc, role, status,
+              must_change_password, password_hash
+         FROM users WHERE id = $1`,
+      [userId],
+    );
+    const user = userRes.rows[0];
+    if (!user || user.status !== "active") {
+      return reply.code(401).send({ error: "session_revoked" });
+    }
+    if (!user.must_change_password) {
+      // El user ya completó el cambio en otro flujo. Pedirle login normal.
+      return reply.code(409).send({ error: "no_change_required" });
+    }
+
+    // 3) Validar TOTP — segundo factor obligatorio.
+    const totpSecret = decryptSecret(masterKey, user.totp_secret_enc).toString("utf8");
+    if (!verifyTotp(totpSecret, totpToken)) {
+      await audit(req, {
+        userId,
+        action: "password.forced_change_failed",
+        metadata: { reason: "invalid_totp" },
+      });
+      return reply.code(401).send({ error: "invalid_totp" });
+    }
+
+    // 4) Rechazar si la nueva password coincide con la temp — el reset
+    //    pierde sentido si el user "cambia" a la misma que el admin generó.
+    const sameAsTemp = await verifyPassword(user.password_hash, newPassword);
+    if (sameAsTemp) {
+      return reply.code(400).send({ error: "same_as_temp_password" });
+    }
+
+    // 5) Persistir nueva password + limpiar flag + crear device para la
+    //    sesión nueva. Transacción para que sea atómico.
+    const newHash = await hashPassword(newPassword);
+    const client = await pool.connect();
+    let device: { id: string; device_name: string; platform: string };
+    try {
+      await client.query("BEGIN");
+
+      await client.query(
+        `UPDATE users
+            SET password_hash = $1,
+                must_change_password = FALSE,
+                updated_at = now()
+          WHERE id = $2`,
+        [newHash, userId],
+      );
+
+      const deviceRes = await client.query<{
+        id: string;
+        device_name: string;
+        platform: string;
+      }>(
+        `INSERT INTO devices (user_id, device_name, platform, user_agent, status, last_seen_at)
+         VALUES ($1, $2, $3, $4, 'active', now())
+         RETURNING id, device_name, platform`,
+        [
+          userId,
+          deviceName,
+          platform,
+          (req.headers["user-agent"] as string) ?? null,
+        ],
+      );
+      device = deviceRes.rows[0]!;
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      req.log.error({ err, userId }, "forced password change failed");
+      return reply.code(500).send({ error: "change_failed" });
+    } finally {
+      client.release();
+    }
+
+    await audit(req, {
+      userId,
+      deviceId: device.id,
+      action: "password.forced_change",
+      metadata: { platform },
+    });
+
+    const token = app.jwt.sign({ sub: userId, did: device.id, role: user.role });
+    return await buildAuthResponse(token, user, device);
+  });
 
   // --------------------------------------------------------------------------
   // Fase 26 (C4) — POST /auth/totp/begin

@@ -370,6 +370,27 @@
 
 ---
 
+## ADR-039 · Fase 30 — Admin password reset (2026-05-07)
+
+- **Contexto:** un usuario perdió su password. Hasta hoy no existía flujo de recuperación: ni admin reset, ni email recovery, ni recovery codes. La única vía era un UPDATE manual a `users.password_hash` por SSH al VPS, sin audit log estructurado ni forced change post-login.
+- **Decisión:** flujo de admin reset + cambio forzado en primer login.
+  - Migration 016 añade `users.must_change_password BOOLEAN DEFAULT FALSE`.
+  - `POST /admin/users/:id/reset-password` (admin + TOTP del admin) genera temp password Argon2id, marca el flag, revoca todos los devices activos del target user, devuelve la temp UNA SOLA VEZ.
+  - `POST /auth/login` detecta el flag: en vez de firmar JWT normal, devuelve `{ changeRequired: true, changeToken, username, displayName }` con un JWT corto (5 min, claim `t: "password-change"`) que solo sirve para el endpoint forced.
+  - `POST /auth/password/forced` valida changeToken + TOTP + nueva password, persiste, limpia el flag, crea device, devuelve `AuthSuccessResponse` completa (user logueado al terminar).
+- **Alternativas:**
+  - Email magic link: requiere SMTP confiable + cuenta de email compromise = chat compromise. Descartado para 25 personas internas.
+  - Recovery codes generados al enrollment: 90% de users los pierden. Descartado.
+  - Mantener el UPDATE manual: cero auditoría, cero forzado al cambio. Descartado.
+- **Riesgos / limitaciones aceptadas:**
+  - Admin malicioso puede resetear a otro admin → mitigación cultural: audit log obligatorio, super-admins reciben security alert. (Hardening adicional propuesto: requerir aprobación 2-of-N para reset de admins. Deferido.)
+  - Admin se loguea con la temp antes de dársela al user → mitigación: el `must_change_password=true` bloquea cualquier acceso útil al chat antes del cambio. El admin solo podría usar la temp + TOTP del user, pero NO tiene el TOTP del user (sigue siendo solo del user).
+  - El user no recupera mensajes E2EE anteriores si perdió el device también (limitación de ADR-025, no de esta fase).
+- **TOTP reset:** **NO** está en esta fase. Si el user también perdió el celular, hoy se hace manualmente. Próxima iteración (Fase 30b).
+- **Workaround vigente:** `apps/api/src/scripts/reset-password-admin.ts` para emergencias mientras el endpoint formal no está deployado. Audit log queda con `action="admin.password.reset_manual"`.
+
+---
+
 ## ADR-038 · Fase D1 — Desktop app con Electron + DLP base (2026-05-07)
 
 - **Contexto:** los usuarios con browser pueden hacer screenshot, descargar adjuntos sin auditoría, copiar/pegar contenido, abrir DevTools, ver código fuente del chat. El web no tiene forma de evitarlo — el SO ve al browser como app de confianza general. La filtración de información es el riesgo #1 actual.

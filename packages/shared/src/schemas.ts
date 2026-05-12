@@ -170,6 +170,88 @@ export const ChangePasswordRequestSchema = z.object({
 export type ChangePasswordRequest = z.infer<typeof ChangePasswordRequestSchema>;
 
 /**
+ * Fase 30 — Login response cuando el user tiene must_change_password=true.
+ *
+ * El server NO firma el JWT normal (que daría acceso completo) sino un
+ * changeToken corto (5 min) que SOLO sirve para llamar /auth/password/forced.
+ * Cualquier otro endpoint protegido rechaza este token (lo discrimina por su
+ * claim `t === "password-change"`).
+ *
+ * El cliente detecta esta respuesta vía `if ("changeRequired" in response)` y
+ * redirige a la página de cambio forzado.
+ */
+export const LoginChangeRequiredResponseSchema = z.object({
+  changeRequired: z.literal(true),
+  changeToken: z.string(),
+  username: UsernameSchema,
+  displayName: z.string(),
+});
+export type LoginChangeRequiredResponse = z.infer<
+  typeof LoginChangeRequiredResponseSchema
+>;
+
+/**
+ * Fase 30 — Cambio forzado de password tras un admin reset.
+ *
+ * Diferencias con /auth/password (Fase 26 C3):
+ *   - NO requiere `currentPassword` (la temp ya fue verificada en /auth/login).
+ *   - Sí requiere TOTP (segundo factor sigue siendo obligatorio).
+ *   - El `changeToken` reemplaza al JWT de sesión — el endpoint lo valida
+ *     contra la claim `t === "password-change"` y rechaza cualquier otro.
+ *   - Al completar, must_change_password se pone en FALSE y el server devuelve
+ *     un AuthSuccessResponse normal (el user queda logueado).
+ */
+export const ForcedPasswordChangeRequestSchema = z.object({
+  changeToken: z.string().min(1),
+  newPassword: PasswordSchema,
+  totpToken: TotpTokenSchema,
+  deviceName: z.string().min(1).max(64),
+  platform: DevicePlatformSchema,
+});
+export type ForcedPasswordChangeRequest = z.infer<
+  typeof ForcedPasswordChangeRequestSchema
+>;
+
+/**
+ * Fase 30 — Admin solicita reset de password para otro user.
+ *
+ * Requiere TOTP del admin (segundo factor obligatorio para acciones
+ * destructivas — un admin con sesión robada NO debería poder resetear
+ * passwords sin el authenticator físico).
+ *
+ * El server genera una temp password random crypto-strong, hashea con
+ * Argon2id, marca must_change_password=true, y revoca todos los devices
+ * activos del target user (zero-trust: si alguna sesión vieja seguía viva,
+ * se invalida ahora).
+ *
+ * La temp password se devuelve UNA SOLA VEZ en la respuesta. El admin la
+ * entrega al user por canal seguro fuera-de-banda (correo personal,
+ * WhatsApp, en persona).
+ */
+export const AdminResetPasswordRequestSchema = z.object({
+  adminTotpToken: TotpTokenSchema,
+});
+export type AdminResetPasswordRequest = z.infer<
+  typeof AdminResetPasswordRequestSchema
+>;
+
+export const AdminResetPasswordResponseSchema = z.object({
+  /** Password temporal de 12 chars (base64url). Mostrar al admin UNA SOLA VEZ. */
+  tempPassword: z.string(),
+  /** Display info del user reseteado para confirmación visual en el modal. */
+  user: z.object({
+    id: z.string().uuid(),
+    username: UsernameSchema,
+    displayName: z.string(),
+  }),
+  /** Cuántos devices activos fueron revocados como side-effect del reset. */
+  revokedDevices: z.number().int().min(0),
+});
+export type AdminResetPasswordResponse = z.infer<
+  typeof AdminResetPasswordResponseSchema
+>;
+
+/**
  * Fase 26 (C4) — rotación de 2FA. Flujo de dos pasos:
  *
  *  1) POST /auth/totp/begin con totpToken actual:
