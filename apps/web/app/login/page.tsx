@@ -7,9 +7,14 @@ import {
   AlertTriangle,
   ArrowRight,
   ChevronRight,
+  Copy,
+  Check,
   Fingerprint,
+  HelpCircle,
+  KeyRound,
   Loader2,
   LogIn,
+  Mail,
   ShieldCheck,
   UserX,
 } from "lucide-react";
@@ -29,9 +34,24 @@ import {
   unlockWithBiometric,
 } from "../lib/biometric";
 import { Button } from "../components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Alert, AlertDescription } from "../components/ui/alert";
+
+/**
+ * Email del admin canónico para reportar pérdida de credenciales. Mismo que
+ * VAPID_SUBJECT del API; lo declaramos hardcoded acá porque es información
+ * pública (la página de login se carga sin sesión) y no queremos hacer un
+ * fetch extra solo para mostrar un texto.
+ */
+const ADMIN_CONTACT_EMAIL = "admin@euromex.xyz";
 
 interface AuthSuccess {
   accessToken: string;
@@ -99,6 +119,21 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [deviceName, setDeviceName] = useState(defaultDeviceName());
+
+  // Estado del modal "¿Olvidaste tu contraseña?" — solo informativo, no
+  // dispara un reset desde acá (el flow es admin-mediated).
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [emailCopied, setEmailCopied] = useState(false);
+
+  async function copyAdminEmail() {
+    try {
+      await navigator.clipboard.writeText(ADMIN_CONTACT_EMAIL);
+      setEmailCopied(true);
+      setTimeout(() => setEmailCopied(false), 2000);
+    } catch {
+      // Fallback silencioso — el user puede seleccionar y copiar manualmente
+    }
+  }
 
   // Al montar: detectar si hay un device hint + keypair guardados en
   // localStorage. Si ambos existen, el usuario puede entrar solo con TOTP.
@@ -420,6 +455,18 @@ export default function LoginPage() {
                 <UserX className="size-3.5" />
                 Usar otra cuenta
               </button>
+
+              {/* Link a recuperación de password — útil si el user perdió la
+                  password pero el device hint sigue ahí (caso típico: cambió
+                  el celular pero el browser de la laptop recuerda el hint) */}
+              <button
+                type="button"
+                onClick={() => setForgotOpen(true)}
+                className="mt-2 flex w-full items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <HelpCircle className="size-3.5" />
+                ¿Olvidaste tu contraseña?
+              </button>
             </>
           )}
 
@@ -450,7 +497,16 @@ export default function LoginPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label htmlFor="password">Contraseña</Label>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="password">Contraseña</Label>
+                    <button
+                      type="button"
+                      onClick={() => setForgotOpen(true)}
+                      className="text-xs text-primary hover:underline focus:outline-none focus:underline"
+                    >
+                      ¿Olvidaste tu contraseña?
+                    </button>
+                  </div>
                   <Input
                     id="password"
                     type="password"
@@ -539,6 +595,81 @@ export default function LoginPage() {
           </Link>
         </p>
       </div>
+
+      {/* ─── Modal informativo: cómo recuperar contraseña ─────────────── */}
+      <Dialog open={forgotOpen} onOpenChange={setForgotOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <HelpCircle className="size-4" />
+              ¿Olvidaste tu contraseña?
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 text-sm">
+            <p className="text-muted-foreground">
+              Por seguridad, las contraseñas no se almacenan en texto plano — ni
+              siquiera nosotros podemos recuperarlas. La única vía es que un
+              administrador del chat genere una contraseña temporal.
+            </p>
+
+            <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
+              <p className="font-medium text-foreground">Pasos:</p>
+              <ol className="ml-4 list-decimal space-y-1.5 text-muted-foreground">
+                <li>
+                  Contacta a un administrador del chat por correo o en persona.
+                </li>
+                <li>
+                  El admin te genera una contraseña temporal de 12 caracteres y te
+                  la envía.
+                </li>
+                <li>
+                  Inicia sesión con esa contraseña temporal + tu código 2FA
+                  habitual <span className="text-foreground font-medium">(tu authenticator no cambia)</span>.
+                </li>
+                <li>
+                  El sistema te pedirá automáticamente elegir una nueva contraseña
+                  antes de continuar.
+                </li>
+              </ol>
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground">
+                Correo de soporte:
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-sm">
+                  <Mail className="mr-1.5 inline size-3.5 align-text-bottom" />
+                  {ADMIN_CONTACT_EMAIL}
+                </code>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={copyAdminEmail}
+                  title="Copiar correo"
+                >
+                  {emailCopied ? <Check className="size-4" /> : <Copy className="size-4" />}
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+              <KeyRound className="mt-0.5 size-3.5 shrink-0 text-amber-700 dark:text-amber-400" />
+              <p className="text-amber-900 dark:text-amber-200">
+                <span className="font-medium">¿Perdiste también el celular del 2FA?</span>{" "}
+                Avísale al administrador para que también te genere un nuevo código TOTP — sin
+                el 2FA no puedes entrar aunque tengas la contraseña.
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button onClick={() => setForgotOpen(false)}>Entendido</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </main>
   );
 }
