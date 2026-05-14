@@ -11,6 +11,7 @@ import {
   ForcedPasswordChangeRequestSchema,
   LoginRequestSchema,
   ReauthRequestSchema,
+  SelfResetPasswordRequestSchema,
   type AuthSuccessResponse,
   type BeginTotpRotationResponse,
   type EnableBiometricResponse,
@@ -792,6 +793,111 @@ export async function authRoutes(app: FastifyInstance) {
 
     const token = app.jwt.sign({ sub: userId, did: device.id, role: user.role });
     return await buildAuthResponse(token, user, device);
+  });
+
+  // --------------------------------------------------------------------------
+  // Fase 30b — POST /auth/password/reset-self
+  //
+  // Self-service password reset. El user que conserva su TOTP puede cambiar
+  // la password por sí mismo sin pasar por un admin. El TOTP es el segundo
+  // factor — sin él, el endpoint no hace nada.
+  //
+  // Diferencia con /auth/password (Fase 26 C3): NO requiere currentPassword
+  // (justamente: el user la olvidó). El TOTP autoriza el reset.
+  // Diferencia con /admin/users/:id/reset-password (Fase 30a): el admin no
+  // interviene, no se genera temp password, el user define directamente la
+  // nueva. El admin solo lo ve después en audit log.
+  //
+  // Anti-enumeration: si el username no existe o user está inactivo, devolvemos
+  // el mismo 401 invalid_credentials_or_totp que con TOTP malo, después de
+  // ejecutar verifyPassword con fakeHash para igualar el timing.
+  // --------------------------------------------------------------------------
+  app.post("/auth/password/reset-self", async (req, reply) => {
+    const parsed = SelfResetPasswordRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: "invalid_body", issues: parsed.error.issues });
+    }
+    const { username, totpToken, newPassword } = parsed.data;
+
+    const userRes = await pool.query<{
+      id: string;
+      username: string;
+      password_hash: string;
+      totp_secret_enc: Buffer;
+      status: string;
+    }>(
+      `SELECT id, username, password_hash, totp_secret_enc, status
+         FROM users WHERE username = $1`,
+      [username],
+    );
+    const user = userRes.rows[0];
+
+    // Anti-timing: siempre corremos verifyPassword aunque user no exista.
+    // El resultado se descarta (no comparamos), solo igualamos el ~100ms.
+    const fakeHash =
+      "$argon2id$v=19$m=19456,t=2,p=1$YWFhYWFhYWFhYWFhYWFhYQ$fQvYVWfQ7gQBZzwYcxNh8UeYPPrQHk5vmzkQCrHnmzU";
+    await verifyPassword(user?.password_hash ?? fakeHash, newPassword);
+
+    if (!user || user.status !== "active") {
+      await audit(req, {
+        action: "password.self_reset_failed",
+        metadata: { username, reason: "user_not_found_or_inactive" },
+      });
+      return reply.code(401).send({ error: "invalid_credentials_or_totp" });
+    }
+
+    const totpSecret = decryptSecret(masterKey, user.totp_secret_enc).toString("utf8");
+    if (!verifyTotp(totpSecret, totpToken)) {
+      await audit(req, {
+        userId: user.id,
+        action: "password.self_reset_failed",
+        metadata: { username, reason: "invalid_totp" },
+      });
+      return reply.code(401).send({ error: "invalid_credentials_or_totp" });
+    }
+
+    // Reset exitoso: nueva pwd, limpia el flag de must_change (por si venía
+    // de un admin reset pendiente — se cancela ese flow), revoca TODOS los
+    // devices activos. El user se loguea fresh con la nueva pwd y crea
+    // device nuevo.
+    const newHash = await hashPassword(newPassword);
+    const client = await pool.connect();
+    let revokedCount = 0;
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE users
+            SET password_hash = $1,
+                must_change_password = FALSE,
+                updated_at = now()
+          WHERE id = $2`,
+        [newHash, user.id],
+      );
+      const revokeRes = await client.query(
+        `UPDATE devices
+            SET status = 'revoked', revoked_at = now()
+          WHERE user_id = $1 AND status = 'active'`,
+        [user.id],
+      );
+      revokedCount = revokeRes.rowCount ?? 0;
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      req.log.error({ err, userId: user.id }, "self password reset failed");
+      return reply.code(500).send({ error: "reset_failed" });
+    } finally {
+      client.release();
+    }
+
+    await audit(req, {
+      userId: user.id,
+      action: "password.self_reset",
+      metadata: { username: user.username, revokedDevices: revokedCount },
+    });
+
+    return reply.code(204).send();
   });
 
   // --------------------------------------------------------------------------

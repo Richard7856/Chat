@@ -252,6 +252,38 @@ export type AdminResetPasswordResponse = z.infer<
 >;
 
 /**
+ * Fase 30b — Self-service password reset.
+ *
+ * Alternativa al admin reset: el user que conserva su authenticator TOTP
+ * puede cambiar la password por sí mismo sin esperar a un administrador.
+ * El TOTP funciona como segundo factor obligatorio — sin él, no hay reset.
+ *
+ * Side-effects servidor:
+ *   - Si TOTP valida: nuevo password_hash, must_change_password=false (por si
+ *     venía de un reset admin pendiente), todos los devices activos del user
+ *     son revocados (zero-trust: el user se loguea fresh con la nueva pwd).
+ *   - audit_log: 'password.self_reset' con username + ip + count de devices.
+ *   - El admin lo ve en su panel → Audit. Si fue ilegítimo, puede investigar.
+ *
+ * Anti-enumeration: si username no existe o user inactivo, devolvemos el
+ * mismo 401 invalid_credentials_or_totp que con TOTP malo. Audit log
+ * registra el intento aunque el user no exista.
+ *
+ * Rate limiting: el rate-limit global del API aplica (300 req/min/IP). Para
+ * un attacker queriendo bruteforce de TOTP eso es ~7.5h por user para los
+ * 1M de combinaciones — combinado con la ventana 30s del TOTP que invalida
+ * cada código, infactible.
+ */
+export const SelfResetPasswordRequestSchema = z.object({
+  username: UsernameSchema,
+  totpToken: TotpTokenSchema,
+  newPassword: PasswordSchema,
+});
+export type SelfResetPasswordRequest = z.infer<
+  typeof SelfResetPasswordRequestSchema
+>;
+
+/**
  * Fase 26 (C4) — rotación de 2FA. Flujo de dos pasos:
  *
  *  1) POST /auth/totp/begin con totpToken actual:
