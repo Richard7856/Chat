@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  KeyRound,
   Loader2,
   Lock,
   Pencil,
@@ -27,6 +28,7 @@ import {
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { formatRelative } from "./admin-utils";
+import { ResetPasswordModal } from "./reset-password-modal";
 import { UserDevicesModal } from "./user-devices-modal";
 import { UserPermissionsModal } from "./user-permissions-modal";
 
@@ -45,6 +47,8 @@ export function UsersTab({
   const [devicesTarget, setDevicesTarget] = useState<AdminUserListItem | null>(null);
   // --- estado del modal de permisos granulares (Fase 24) ---
   const [permsTarget, setPermsTarget] = useState<AdminUserListItem | null>(null);
+  // --- estado del modal de reset de password (Fase 30) ---
+  const [resetTarget, setResetTarget] = useState<AdminUserListItem | null>(null);
 
   // --- estado del modal de edición de perfil ---
   const [editTarget, setEditTarget] = useState<AdminUserListItem | null>(null);
@@ -226,6 +230,18 @@ export function UsersTab({
         user={permsTarget}
         onClose={() => setPermsTarget(null)}
         onSaved={() => void refresh()}
+      />
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Modal de reset de password (Fase 30)                                */}
+      {/* ------------------------------------------------------------------ */}
+      <ResetPasswordModal
+        user={resetTarget}
+        onClose={() => {
+          setResetTarget(null);
+          // Refresh para que se vea el reflejo del revoked devices count
+          void refresh();
+        }}
       />
 
       {/* ------------------------------------------------------------------ */}
@@ -558,7 +574,7 @@ export function UsersTab({
                       })}
                     </td>
 
-                    {/* --- Botones de acción (perfil + permisos) --- */}
+                    {/* --- Botones de acción (perfil + permisos + reset) --- */}
                     <td className="px-2 py-3 text-right">
                       <div className="inline-flex items-center gap-1">
                         <button
@@ -569,6 +585,19 @@ export function UsersTab({
                           className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-primary disabled:opacity-50"
                         >
                           <Lock className="size-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setResetTarget(u)}
+                          disabled={saving || isMe}
+                          title={
+                            isMe
+                              ? "Usa Settings → Cambiar contraseña para resetear la tuya"
+                              : "Restablecer contraseña (revoca sesiones del usuario)"
+                          }
+                          className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-amber-600 disabled:opacity-50"
+                        >
+                          <KeyRound className="size-3.5" />
                         </button>
                         <button
                           type="button"

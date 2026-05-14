@@ -44,6 +44,40 @@ interface AuthSuccess {
   };
 }
 
+/**
+ * Fase 30 — Login response cuando el admin reseteó la password del user.
+ * El server devuelve esto en vez de AuthSuccess. El cliente debe redirigir
+ * a /login/forced-change con el changeToken para que el user complete el
+ * cambio antes de obtener sesión válida.
+ */
+interface LoginChangeRequired {
+  changeRequired: true;
+  changeToken: string;
+  username: string;
+  displayName: string;
+}
+
+type LoginApiResponse = AuthSuccess | LoginChangeRequired;
+
+function isChangeRequired(r: LoginApiResponse): r is LoginChangeRequired {
+  return "changeRequired" in r && r.changeRequired === true;
+}
+
+/**
+ * Sessión storage keys para pasar el changeToken a /login/forced-change.
+ * sessionStorage en vez de URL para evitar leaks por history/referer
+ * (los JWT en URL son anti-pattern aunque expire en 5 min).
+ */
+const CHANGE_TOKEN_KEY = "euromex.changeToken";
+const CHANGE_USERNAME_KEY = "euromex.changeUsername";
+const CHANGE_DISPLAY_KEY = "euromex.changeDisplayName";
+
+function stashChangeContext(r: LoginChangeRequired) {
+  sessionStorage.setItem(CHANGE_TOKEN_KEY, r.changeToken);
+  sessionStorage.setItem(CHANGE_USERNAME_KEY, r.username);
+  sessionStorage.setItem(CHANGE_DISPLAY_KEY, r.displayName);
+}
+
 // Fase 27: 'biometric' es una variante del modo "quick" — tenemos device
 // hint + keypair + biometría activada. La pantalla muestra el botón huella
 // como acción primaria; "Usar TOTP" hace fallback al modo quick clásico.
@@ -181,7 +215,7 @@ export default function LoginPage() {
       // el browser sigue siendo el mismo), pasamos el deviceId para que el
       // server reuse esa fila en vez de crear un device nuevo cada vez.
       const existingHint = loadDeviceHint();
-      const res = await api<AuthSuccess>("/auth/login", {
+      const res = await api<LoginApiResponse>("/auth/login", {
         body: {
           username,
           password,
@@ -191,6 +225,16 @@ export default function LoginPage() {
           ...(existingHint?.deviceId ? { deviceId: existingHint.deviceId } : {}),
         },
       });
+
+      // Fase 30 — Admin reseteó la password. El server no firma sesión; nos
+      // manda a /login/forced-change para que el user complete el cambio
+      // ANTES de obtener acceso real.
+      if (isChangeRequired(res)) {
+        stashChangeContext(res);
+        router.push("/login/forced-change");
+        return;
+      }
+
       saveSession(res);
       await ensureDeviceKeypair(res.device.id);
       router.push("/app/chat");
