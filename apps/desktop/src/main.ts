@@ -39,6 +39,10 @@ import path from "node:path";
 
 const REMOTE_URL = "https://euromex.xyz";
 const ALLOWED_HOSTS = new Set(["euromex.xyz", "api.euromex.xyz"]);
+// Whitelist de protocolos seguros para shell.openExternal. SIN ESTO un link
+// malicioso (mensaje del chat con file:///etc/passwd o javascript:...) podría
+// disparar shell.openExternal con URI peligrosa al click del usuario.
+const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"]);
 const isDev = !app.isPackaged;
 
 // En dev el icono se carga desde build/icon.png. En producción electron-builder
@@ -98,28 +102,35 @@ function createWindow(): void {
 
   // ── External links → browser del SO ─────────────────────────────────────
   // window.open() / target="_blank": validamos host. Si no es euromex.xyz,
-  // abrir en el browser del usuario y NO crear ventana hija.
+  // abrir en el browser del usuario SOLO si el protocolo está en la whitelist
+  // (http/https/mailto/tel). Cualquier otro (file:, javascript:, custom
+  // schemes) se descarta — un mensaje del chat con un link malicioso no
+  // debería poder abrir un archivo local del usuario.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const target = new URL(url);
       if (ALLOWED_HOSTS.has(target.hostname)) {
         return { action: "allow" };
       }
+      if (ALLOWED_EXTERNAL_PROTOCOLS.has(target.protocol)) {
+        void shell.openExternal(url);
+      }
     } catch {
       // URL malformada — denegar silenciosamente
     }
-    void shell.openExternal(url);
     return { action: "deny" };
   });
 
   // Top-level navigation: si la página intenta navegar a otro dominio,
-  // cancelar y abrir en browser. Evita que un link malicioso saque al
-  // usuario de la app sin que se dé cuenta.
+  // cancelar y delegar al browser del SO (con la misma whitelist de
+  // protocolos). Evita que un link malicioso saque al usuario de la app
+  // sin que se dé cuenta o cargue contenido local.
   mainWindow.webContents.on("will-navigate", (event, url) => {
     try {
       const target = new URL(url);
-      if (!ALLOWED_HOSTS.has(target.hostname)) {
-        event.preventDefault();
+      if (ALLOWED_HOSTS.has(target.hostname)) return;
+      event.preventDefault();
+      if (ALLOWED_EXTERNAL_PROTOCOLS.has(target.protocol)) {
         void shell.openExternal(url);
       }
     } catch {

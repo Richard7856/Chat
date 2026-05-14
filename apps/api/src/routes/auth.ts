@@ -362,7 +362,17 @@ export async function authRoutes(app: FastifyInstance) {
     // /auth/password/forced. Cualquier otro endpoint protegido lo rechaza.
     // No creamos device aquí — eso pasa en /auth/password/forced, después
     // de que el user complete el cambio.
-    if (user.must_change_password) {
+    //
+    // Race-condition guard: re-leer must_change_password fresco de BD justo
+    // antes de decidir. Un admin reset concurrente entre el SELECT inicial y
+    // este punto cambiaría el flag a TRUE; sin esta re-lectura el user
+    // entraría con sesión normal bypaseando el cambio forzado.
+    const freshFlagRes = await pool.query<{ must_change_password: boolean }>(
+      "SELECT must_change_password FROM users WHERE id = $1",
+      [user.id],
+    );
+    const mustChange = freshFlagRes.rows[0]?.must_change_password ?? user.must_change_password;
+    if (mustChange) {
       const changeToken = app.jwt.sign(
         { t: "password-change", sub: user.id } as unknown as SessionClaims,
         { expiresIn: "5m" },
@@ -662,13 +672,25 @@ export async function authRoutes(app: FastifyInstance) {
 
     // 1) Validar el changeToken — debe ser un JWT firmado por nosotros con
     //    claim t="password-change". El verify ya valida firma + expiry.
+    //    Cualquier rechazo se audita: ayuda a detectar intentos de replay o
+    //    de usar tokens de otros tipos (rotation, biometric) en este endpoint.
     let claims: { t: string; sub: string };
     try {
       claims = app.jwt.verify(changeToken) as { t: string; sub: string };
-    } catch {
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : "verify_failed";
+      await audit(req, {
+        action: "password.forced_change_invalid_token",
+        metadata: { reason },
+      });
       return reply.code(401).send({ error: "invalid_change_token" });
     }
     if (claims.t !== "password-change" || !claims.sub) {
+      await audit(req, {
+        userId: claims.sub ?? null,
+        action: "password.forced_change_invalid_token",
+        metadata: { reason: "wrong_token_type", t: claims.t },
+      });
       return reply.code(401).send({ error: "invalid_change_token" });
     }
     const userId = claims.sub;

@@ -43,7 +43,10 @@ export function SecurityWatermark() {
     const label = `@${username} · ${stamp} UTC`;
     // Escape mínimo para SVG inline — username ya está validado contra el
     // regex de enrollment (solo a-z 0-9 _ -), pero mejor defensivo.
-    const safeLabel = label.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const safeLabel = label
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
     const svg = `
       <svg xmlns='http://www.w3.org/2000/svg' width='420' height='180'>
         <text x='0' y='90' fill='rgba(120,120,120,0.07)'
