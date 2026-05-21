@@ -9,6 +9,7 @@ import {
   Fingerprint,
   Headphones,
   Key,
+  Landmark,
   Lock,
   Pause,
   Play,
@@ -182,6 +183,22 @@ const SECTIONS: Section[] = [
       "Passphrase guardada exclusivamente en /etc/euromex/backup.env",
       "Sin la passphrase, los backups son ilegibles incluso para nosotros",
       "Restore procedure documentado en HOSTINGER.md",
+    ],
+  },
+  {
+    id: "bank-level",
+    icon: Landmark,
+    title: "Nivel empresarial y bancario",
+    narration:
+      "La seguridad de esta plataforma usa los mismos algoritmos criptográficos que la banca internacional. A E S de doscientos cincuenta y seis bits para los archivos, el mismo cifrado que usan los bancos para datos sensibles. Argon dos i d para las contraseñas, la recomendación principal de O W A S P y aceptada por el N I S T. T L S uno punto tres en tránsito, con H S T S forzado, igual que cualquier portal bancario moderno. Doble factor de autenticación obligatorio, requisito de cualquier banco actual. En algunos aspectos superamos lo que hace la banca tradicional: el cifrado de extremo a extremo de los mensajes significa que ni el servidor puede leerlos, mientras que la banca interna sí ve el contenido de sus sistemas. La marca de agua personal en pantalla y el auto-hospedaje completan un nivel de protección que cumple los estándares técnicos relevantes para uso empresarial.",
+    bullets: [
+      "AES-256-GCM en archivos — mismo cifrado que la banca para datos sensibles",
+      "TLS 1.3 con HSTS forzado — tránsito al nivel de portales bancarios",
+      "Argon2id para contraseñas — recomendación principal de OWASP, aceptada por NIST",
+      "2FA obligatorio — requisito estándar de cualquier banco moderno",
+      "E2EE real — ni el servidor lee mensajes (la banca sí ve el contenido interno)",
+      "Watermark personal en pantalla — trazabilidad superior a la mayoría de plataformas",
+      "Self-hosted — datos en tu propia infraestructura, no en nube de terceros",
     ],
   },
   {
