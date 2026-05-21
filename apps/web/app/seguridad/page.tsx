@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AlertTriangle,
   Camera,
   Database,
   Eye,
@@ -16,6 +15,7 @@ import {
   Server,
   Shield,
   ShieldCheck,
+  Sparkles,
   Square,
   UserCog,
 } from "lucide-react";
@@ -198,17 +198,18 @@ const SECTIONS: Section[] = [
     ],
   },
   {
-    id: "limitations",
-    icon: AlertTriangle,
-    title: "Limitaciones honestas",
+    id: "roadmap",
+    icon: Sparkles,
+    title: "Próximos pasos",
     narration:
-      "Para ser totalmente transparentes: si pierdes tu dispositivo y no tienes ningún otro, los mensajes históricos pueden quedar ilegibles, porque solo tu dispositivo tiene las claves para descifrarlos. Esta plataforma no incluye llamadas de voz o video. La marca de agua puede ayudarnos a identificar fugas, pero no impide tomarle foto a la pantalla con otro teléfono.",
+      "Estos son los proyectos en el roadmap a corto y mediano plazo. Llamadas de voz y video cifradas de extremo a extremo, manteniendo el mismo nivel de privacidad que los mensajes. Respaldos replicados a un servidor secundario fuera de la infraestructura principal, para que aunque falle el servidor primario, la información esté segura. Detección de capturas de pantalla en i O S para identificar quién las intenta tomar, complementando el bloqueo que ya existe en Android. Biometría unificada en navegador y móvil con el estándar W3C Web Authn, también conocido como passkeys. Búsqueda dentro de las conversaciones de forma local, sin que el servidor pueda ver los términos buscados. Y recuperación de doble factor cuando el usuario pierde el dispositivo del autenticador, hoy solo posible vía administrador.",
     bullets: [
-      "Sin device backup: historial puede quedar ilegible",
-      "Sin llamadas voz/video (no implementado por decisión de scope)",
-      "Sin forward secrecy completa (device comprometido lee mensajes pasados que tenía)",
-      "El watermark identifica pero no impide capturas con cámara externa",
-      "iOS no bloquea screenshots — solo Android y Desktop",
+      "Llamadas de voz y video cifradas extremo a extremo",
+      "Respaldos off-site replicados a servidor secundario",
+      "Detección de capturas en iOS (log de quién intentó)",
+      "WebAuthn / Passkeys — biometría unificada web + móvil",
+      "Búsqueda dentro del chat (client-side, server-blind)",
+      "Reset de 2FA self-service para pérdida de autenticador",
     ],
   },
 ];
@@ -520,10 +521,6 @@ export default function SeguridadPage() {
           <p className="text-center text-sm text-muted-foreground">
             ¿Preguntas o reportes de seguridad? Contacta al área de TI de Grupo
             Euromex.
-          </p>
-          <p className="mt-2 text-center text-xs text-muted-foreground">
-            Documento técnico complementario disponible bajo solicitud (DECISIONS.md
-            con 39 decisiones arquitectónicas registradas).
           </p>
         </footer>
       </main>
