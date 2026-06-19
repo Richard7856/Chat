@@ -370,6 +370,46 @@
 
 ---
 
+## ADR-041 · Filosofía DLP — detectar + identificar, no prohibir (2026-06-19, decisión de producto)
+
+- **Contexto:** se aclaró con el cliente la intención real del producto. El objetivo NO es limitar/prohibir las acciones del usuario, sino **saber quién filtra información y poder reaccionar**. La operación necesita que la gente trabaje normal (incluyendo tomar capturas si lo necesitan), pero con trazabilidad: si algo se filtra, identificar al responsable y tener control para frenarlo.
+- **Decisión:** girar el modelo DLP de **bloqueo** a **detección + identificación**:
+  - **Watermark siempre activo** (todas las plataformas) — es la defensa universal: identifica usuario + timestamp en cualquier imagen filtrada. YA implementado (`SecurityWatermark`).
+  - **Detección de capturas** donde la plataforma lo permita → audit log de quién/cuándo/cómo.
+  - **Bloqueo de screenshots** deja de ser el default. Pasa a ser un permiso opcional por usuario (para casos puntuales donde sí se quiera prohibir).
+- **Verdad técnica (límites de la detección):** "avisar quién y cómo tomó el screenshot" solo es confiable en **iOS** (notificación nativa `UIApplicationUserDidTakeScreenshotNotification` + detección de screen recording). En **Android** NO hay API pública confiable (workarounds frágiles con permisos invasivos). En **Desktop/Electron** y **Web** es imposible detectar capturas del SO. → En esas plataformas el **watermark es la defensa real** (identifica al filtrador cuando la imagen aparece), no la detección.
+- **Alternativas:**
+  - Mantener bloqueo total (FLAG_SECURE + setContentProtection): contradice la filosofía "no limitar". Descartado como default.
+  - Solo watermark sin detección: más simple pero pierde el log proactivo en iOS donde sí se puede.
+- **Riesgos / limitaciones aceptadas:**
+  - Quitar el bloqueo deja Android/Desktop/Web SIN detección confiable → dependen 100% del watermark. Aceptado: el watermark cumple el objetivo de "saber quién filtró".
+  - La detección iOS no cubre foto con otra cámara/teléfono — el watermark sí ayuda ahí.
+- **Próximos pasos:**
+  1. Hacer el bloqueo de screenshots configurable por usuario (hoy FLAG_SECURE/setContentProtection están hardcoded ON).
+  2. Plugin iOS de detección → endpoint `POST /audit-log/client-event` → audit log.
+  3. (Opcional) Workaround Android best-effort si el cliente lo pide explícitamente, con la limitación documentada.
+
+## ADR-040 · Fase 31 — Identidad por usuario con escrow corporativo (2026-06-19, decisión tomada, pendiente implementar)
+
+- **Contexto:** dos requisitos reales de operación. (1) Los empleados olvidan la contraseña con frecuencia y el reset actual destruye el historial (revoca devices → pierde llaves E2EE). (2) Necesitan abrir en computadora **y** celular viendo los mismos mensajes. Hoy el modelo es "identidad por dispositivo" (`apps/web/app/lib/keys.ts` genera y guarda el keypair por `deviceId`), lo que impide ambas cosas.
+- **Decisión:** cambiar a **una identidad E2EE por usuario** (no por dispositivo), respaldada con **escrow corporativo**. El cliente eligió explícitamente el modelo de escrow administrado por la empresa (vs. recovery solo-usuario o híbrido).
+  - **Uso normal:** la llave privada de identidad se cifra con una clave derivada de la **contraseña** del usuario (Argon2id). El servidor solo guarda el blob cifrado + el hash de password — no puede leer la identidad en operación normal. Compu y cel descifran la **misma** identidad → comparten todo el historial.
+  - **Recuperación:** existe una **segunda copia cifrada con la llave pública de escrow de la organización**. Cuando el usuario olvida todo, el admin (con su TOTP) dispara la restauración. La llave privada de escrow se respalda **offline** (caja fuerte en oficina + copia personal de Richard — confirmado disponible).
+  - **Reset de contraseña:** deja de destruir historial — solo re-cifra el blob de identidad con la contraseña nueva.
+- **Implicación crítica en la narrativa:** esto **cambia la promesa de seguridad**. La página `/seguridad` dice hoy "ni el servidor puede leer" y "E2EE real" — con escrow eso deja de ser 100% cierto (la empresa tiene una llave maestra capaz de recuperar/leer). **Hay que reescribir la narrativa** a "cifrado de extremo a extremo con recuperación administrada por la empresa". Pendiente como parte de Fase 31.
+- **Alternativas (rechazadas por el cliente):**
+  - Recovery solo-usuario (frase de 12 palabras): E2EE puro, pero este grupo olvida credenciales seguido → perderían la frase también.
+  - Híbrido (frase + escrow): más complejo, mismo trade-off de que el admin puede recuperar.
+- **Riesgos / limitaciones aceptadas:**
+  - La llave de escrow es el **único punto irrecuperable**: si se pierde/corrompe, nadie recupera nada. Mitigación: respaldo offline doble (caja fuerte + copia personal). ✓ confirmado.
+  - Admin malicioso con escrow puede leer todo → requiere **audit log obligatorio de cada uso del escrow** + idealmente aprobación de 2 admins.
+  - `MASTER_ENC_KEY` del servidor se vuelve aún más crítico (protege la llave de escrow).
+  - Concurrencia: dos devices cambiando password casi simultáneo → re-cifrado del blob necesita lock o last-write-wins cuidadoso.
+- **Decisiones de alcance tomadas:**
+  - **Historial actual = corte limpio.** El cliente confirmó que todo lo existente son pruebas, nadie lo usaba → se borra. El nuevo modelo arranca de cero.
+  - Cambio de modelo de mensajería: de "1 envelope por device" (ADR-006/007) a "1 envelope por usuario". Toca el corazón del envío/descifrado.
+- **Tamaño:** el cambio más grande del proyecto (~4-6 sesiones). Plan: la próxima sesión se dedica al **diseño formal** (esquema BD + plan de migración + las 4 preguntas en detalle) antes de tocar código. Construcción por capas, empezando por la criptografía aislada (testeable) antes de la mensajería.
+
 ## ADR-039 · Fase 30 — Admin password reset (2026-05-07)
 
 - **Contexto:** un usuario perdió su password. Hasta hoy no existía flujo de recuperación: ni admin reset, ni email recovery, ni recovery codes. La única vía era un UPDATE manual a `users.password_hash` por SSH al VPS, sin audit log estructurado ni forced change post-login.
