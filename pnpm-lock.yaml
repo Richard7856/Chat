@@ -20,6 +20,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@euromex/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@euromex/shared':
         specifier: workspace:*
         version: link:../../packages/shared

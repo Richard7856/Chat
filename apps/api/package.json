@@ -17,9 +17,11 @@
     "migrate": "tsx src/scripts/migrate.ts apply",
     "migrate:status": "tsx src/scripts/migrate.ts status",
     "migrate:dry-run": "tsx src/scripts/migrate.ts dry-run",
-    "migrate:bootstrap": "tsx src/scripts/migrate.ts bootstrap"
+    "migrate:bootstrap": "tsx src/scripts/migrate.ts bootstrap",
+    "bootstrap-escrow": "tsx src/scripts/bootstrap-escrow.ts"
   },
   "dependencies": {
+    "@euromex/crypto": "workspace:*",
     "@euromex/shared": "workspace:*",
     "@fastify/cookie": "^11.0.1",
     "@fastify/cors": "^10.0.1",
