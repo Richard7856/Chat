@@ -283,6 +283,58 @@ export type SelfResetPasswordRequest = z.infer<
   typeof SelfResetPasswordRequestSchema
 >;
 
+// ===========================================================================
+// Fase 31 — Identidad por usuario con escrow (ver docs/FASE-31-IDENTIDAD-ESCROW.md)
+// ===========================================================================
+
+/**
+ * El cliente sube su identidad de usuario recién generada. Todos los blobs
+ * van en base64. El server los guarda opacos (nunca ve la privada en claro).
+ *   - identityPublic: clave pública X25519 (32 bytes)
+ *   - identityEncPw: privada envuelta con la llave derivada de la contraseña
+ *     (secretbox: nonce||ciphertext)
+ *   - pwSalt: salt para derivar la llave de contraseña (16 bytes)
+ *   - identityEncEscrow: privada sellada hacia la pública de escrow
+ *     (sealed box: ephemeralPub||nonce||ciphertext)
+ */
+export const EnrollIdentityRequestSchema = z.object({
+  identityPublic: z.string().min(1),
+  identityEncPw: z.string().min(1),
+  pwSalt: z.string().min(1),
+  identityEncEscrow: z.string().min(1),
+});
+export type EnrollIdentityRequest = z.infer<typeof EnrollIdentityRequestSchema>;
+
+/**
+ * Estado de la identidad del usuario. El cliente lo consulta tras el login:
+ * si `hasIdentity`, descifra `identityEncPw` con la contraseña; si no, genera
+ * una identidad nueva y la enrolla.
+ */
+export const IdentityStatusResponseSchema = z.object({
+  hasIdentity: z.boolean(),
+  identityPublic: z.string().nullable(),
+  identityEncPw: z.string().nullable(),
+  pwSalt: z.string().nullable(),
+});
+export type IdentityStatusResponse = z.infer<typeof IdentityStatusResponseSchema>;
+
+/** Devuelve la pública de escrow para que el cliente selle su identidad. */
+export const EscrowPubkeyResponseSchema = z.object({
+  escrowPublic: z.string(),
+});
+export type EscrowPubkeyResponse = z.infer<typeof EscrowPubkeyResponseSchema>;
+
+/**
+ * Re-envolver la identidad con una contraseña nueva (cambio de password sin
+ * perder identidad). El cliente, ya con la privada en memoria, la re-cifra
+ * con la nueva llave de contraseña y sube el nuevo blob + salt.
+ */
+export const RewrapIdentityRequestSchema = z.object({
+  identityEncPw: z.string().min(1),
+  pwSalt: z.string().min(1),
+});
+export type RewrapIdentityRequest = z.infer<typeof RewrapIdentityRequestSchema>;
+
 /**
  * Fase 26 (C4) — rotación de 2FA. Flujo de dos pasos:
  *

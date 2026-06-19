@@ -10,6 +10,7 @@ import { redisPing } from "./db/redis.js";
 import { registerJwt } from "./auth/jwt.js";
 import { adminRoutes } from "./routes/admin.js";
 import { authRoutes } from "./routes/auth.js";
+import { identityRoutes } from "./routes/identity.js";
 import { invitationRoutes } from "./routes/invitations.js";
 import { conversationRoutes } from "./routes/conversations.js";
 import { attachmentRoutes } from "./routes/attachments.js";
@@ -64,6 +65,7 @@ export async function buildServer() {
   });
 
   await app.register(authRoutes);
+  await app.register(identityRoutes);
   await app.register(invitationRoutes);
   await app.register(conversationRoutes);
   await app.register(attachmentRoutes);
