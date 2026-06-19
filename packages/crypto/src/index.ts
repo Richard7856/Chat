@@ -22,6 +22,7 @@
  */
 import nacl from "tweetnacl";
 import naclUtil from "tweetnacl-util";
+import { argon2id } from "hash-wasm";
 
 export interface IdentityKeypair {
   /** 32 bytes — X25519 pública, publicable. */
@@ -145,4 +146,149 @@ function compare(a: Uint8Array, b: Uint8Array): number {
     if (a[i]! > b[i]!) return 1;
   }
   return a.length - b.length;
+}
+
+// ===========================================================================
+// Fase 31 — primitivas para identidad por usuario con escrow
+//
+// Estas funciones NO se usan en el flujo actual (identidad por device). Son
+// la base aislada (Capa 1) del nuevo modelo: una identidad por usuario cuya
+// llave privada se guarda cifrada de dos formas (con la contraseña del
+// usuario y con la llave de escrow de la organización). Ver
+// docs/FASE-31-IDENTIDAD-ESCROW.md.
+// ===========================================================================
+
+/** Caja simétrica autenticada (XSalsa20-Poly1305). nonce viaja en claro. */
+export interface SecretBox {
+  ciphertext: Uint8Array;
+  nonce: Uint8Array;
+}
+
+/** Longitud de salt para la derivación de contraseña (16 bytes). */
+export const PASSWORD_SALT_BYTES = 16;
+
+/**
+ * Parámetros de Argon2id para derivar una llave simétrica desde la
+ * contraseña del usuario. Fijos por ahora; si se suben en el futuro, hay
+ * que versionar el blob (un device con params viejos debe poder re-derivar).
+ *
+ * 64 MiB de memoria + 3 iteraciones: ~200-500ms en un browser moderno.
+ * Balance entre resistencia a brute-force (si roban el blob cifrado) y UX
+ * de login. parallelism=1 porque el browser es efectivamente single-thread
+ * para esto.
+ */
+export const ARGON2_PARAMS = {
+  parallelism: 1,
+  iterations: 3,
+  memorySize: 65536, // KiB = 64 MiB
+  hashLength: 32, // bytes → llave para secretbox
+} as const;
+
+/** Genera un salt aleatorio para derivar la llave de contraseña. */
+export function randomSalt(): Uint8Array {
+  return nacl.randomBytes(PASSWORD_SALT_BYTES);
+}
+
+/**
+ * Deriva una llave simétrica de 32 bytes desde una contraseña, usando
+ * Argon2id (mismo algoritmo que el server usa para password_hash, vía
+ * hash-wasm para que corra en el browser).
+ *
+ * @param password contraseña del usuario en claro (solo en memoria)
+ * @param salt     salt aleatorio (`randomSalt()`), se persiste junto al blob
+ * @returns        Uint8Array de 32 bytes — NO persistir; vive solo en memoria
+ */
+export async function deriveKeyFromPassword(
+  password: string,
+  salt: Uint8Array,
+): Promise<Uint8Array> {
+  return argon2id({
+    password,
+    salt,
+    parallelism: ARGON2_PARAMS.parallelism,
+    iterations: ARGON2_PARAMS.iterations,
+    memorySize: ARGON2_PARAMS.memorySize,
+    hashLength: ARGON2_PARAMS.hashLength,
+    outputType: "binary",
+  });
+}
+
+/**
+ * Cifra datos con una llave simétrica de 32 bytes (XSalsa20-Poly1305).
+ * Para envolver la llave privada de identidad con la llave derivada de la
+ * contraseña.
+ */
+export async function secretboxSeal(
+  plaintext: Uint8Array,
+  key: Uint8Array,
+): Promise<SecretBox> {
+  const nonce = nacl.randomBytes(nacl.secretbox.nonceLength); // 24 bytes
+  const ciphertext = nacl.secretbox(plaintext, nonce, key);
+  return { ciphertext, nonce };
+}
+
+/** Abre una caja simétrica. Lanza si la llave es incorrecta o hubo tampering. */
+export async function secretboxOpen(
+  box: SecretBox,
+  key: Uint8Array,
+): Promise<Uint8Array> {
+  const pt = nacl.secretbox.open(box.ciphertext, box.nonce, key);
+  if (!pt) throw new Error("secretbox_open_failed");
+  return pt;
+}
+
+/**
+ * "Sealed box" — cifrado anónimo hacia una llave pública (estilo
+ * crypto_box_seal de libsodium, que tweetnacl no expone). Se usa para
+ * cifrar la llave privada de identidad del usuario hacia la llave pública
+ * de escrow de la organización: cualquiera puede sellar, solo quien tenga
+ * la privada de escrow puede abrir.
+ *
+ * Implementación: keypair efímero + nonce aleatorio. El efímero se descarta
+ * tras sellar (su privada nunca se guarda), por lo que solo el destinatario
+ * puede descifrar.
+ *
+ * Formato del blob: ephemeralPub(32) || nonce(24) || ciphertext.
+ */
+export async function sealedBoxSeal(
+  plaintext: Uint8Array,
+  recipientPublicKey: Uint8Array,
+): Promise<Uint8Array> {
+  const eph = nacl.box.keyPair();
+  const nonce = nacl.randomBytes(nacl.box.nonceLength); // 24 bytes
+  const ct = nacl.box(plaintext, nonce, recipientPublicKey, eph.secretKey);
+  const out = new Uint8Array(32 + 24 + ct.length);
+  out.set(eph.publicKey, 0);
+  out.set(nonce, 32);
+  out.set(ct, 56);
+  return out;
+}
+
+/**
+ * Abre un sealed box con la llave privada del destinatario (la privada de
+ * escrow). No requiere la pública del remitente: viaja embebida (efímera).
+ * Lanza si el blob está corrupto o la privada es incorrecta.
+ */
+export async function sealedBoxOpen(
+  sealed: Uint8Array,
+  recipientPrivateKey: Uint8Array,
+): Promise<Uint8Array> {
+  if (sealed.length < 56) throw new Error("sealed_box_too_short");
+  const ephemeralPub = sealed.subarray(0, 32);
+  const nonce = sealed.subarray(32, 56);
+  const ct = sealed.subarray(56);
+  const pt = nacl.box.open(ct, nonce, ephemeralPub, recipientPrivateKey);
+  if (!pt) throw new Error("sealed_box_open_failed");
+  return pt;
+}
+
+/**
+ * Genera el keypair de escrow de la organización. Se corre UNA SOLA VEZ al
+ * inicializar el sistema. La pública se embebe/distribuye para sellar
+ * identidades; la privada se cifra con MASTER_ENC_KEY en el server (Opción A,
+ * ADR-040) y se respalda offline. Es X25519, mismo tipo que las identidades.
+ */
+export async function generateEscrowKeypair(): Promise<IdentityKeypair> {
+  const kp = nacl.box.keyPair();
+  return { publicKey: kp.publicKey, privateKey: kp.secretKey };
 }

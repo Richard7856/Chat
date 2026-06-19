@@ -11,13 +11,16 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "echo \"(lint pendiente)\"",
-    "test": "echo \"(tests pendientes)\""
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
+    "hash-wasm": "^4.12.0",
     "tweetnacl": "^1.0.3",
     "tweetnacl-util": "^0.15.1"
   },
   "devDependencies": {
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.9"
   }
 }

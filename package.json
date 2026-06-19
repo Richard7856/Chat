@@ -28,7 +28,8 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "argon2",
-      "electron"
+      "electron",
+      "esbuild"
     ]
   }
 }

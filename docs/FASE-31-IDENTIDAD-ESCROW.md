@@ -87,17 +87,20 @@ La privada del usuario (`userPriv`) nunca se guarda en claro en el servidor. Se 
 
 ## 4. Decisiones de diseño que requieren confirmación
 
-### D1 — ¿Dónde vive la llave privada de escrow?
+### D1 — ¿Dónde vive la llave privada de escrow? → ✅ RESUELTO: Opción A (2026-06-19)
 
 | Opción | Recovery | E2EE en operación normal | Fricción |
 |---|---|---|---|
-| **A. En el server, cifrada con MASTER_ENC_KEY** | Self-service fluido (TOTP, sin admin) | ⚠️ El server PUEDE leer todo siempre (con audit) | Baja |
-| **B. Offline (caja fuerte), admin la ingresa en recovery** | Requiere admin + llave física cada vez | ✅ Server NO puede leer normalmente | Alta |
+| **A. En el server, cifrada con MASTER_ENC_KEY** ✅ ELEGIDA | Self-service fluido (TOTP, sin admin) | ⚠️ El server PUEDE leer todo siempre (con audit) | Baja |
+| B. Offline (caja fuerte), admin la ingresa en recovery | Requiere admin + llave física cada vez | Server NO puede leer normalmente | Alta |
 
-- "Se les olvida mucho" → recovery frecuente → **A** es operacionalmente más práctica.
-- Pero **A** relaja más el E2EE (el server puede leer siempre, no solo en recovery).
-- **Recomendación:** **A** para uso fluido + respaldo offline en caja fuerte para *disaster recovery* (si el server o el MASTER_ENC_KEY se pierden). Coherente con "se les olvida seguido".
-- **Decisión del cliente pendiente.**
+**Decisión:** Opción A. La `escrowPriv` vive en el server cifrada con `MASTER_ENC_KEY` (mismo patrón AES-256-GCM que los TOTP secrets) → recovery self-service fluido (el empleado lo hace con su TOTP, sin sacar la llave física). El respaldo offline en caja fuerte (+ copia personal de Richard) queda para **disaster recovery** (si el server o el `MASTER_ENC_KEY` se pierden).
+
+**Consecuencias asumidas:**
+- El server con `MASTER_ENC_KEY` puede técnicamente descifrar cualquier identidad → puede leer todo. Es el escrow corporativo aceptado en ADR-040.
+- **Cada uso del escrow se audita** (`audit_log` action `identity.escrow_recovery`).
+- El `MASTER_ENC_KEY` se vuelve el secreto más crítico del sistema (protege escrow + TOTP). Refuerza la importancia de su respaldo.
+- La narrativa `/seguridad` debe reflejar esto honestamente (§9).
 
 ### D2 — Envelope por usuario (confirmar el cambio profundo)
 
