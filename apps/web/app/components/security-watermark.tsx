@@ -47,12 +47,16 @@ export function SecurityWatermark() {
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
+    // Tile más pequeño = más repeticiones en pantalla (más denso).
+    // opacity 0.13 (vs 0.07 anterior) — visible en pantalla y robusto en
+    // capturas, sin impedir leer el chat. Es el balance DLP: disuasivo +
+    // forense, no obstrucción. Ajustar aquí si el cliente quiere más/menos.
     const svg = `
-      <svg xmlns='http://www.w3.org/2000/svg' width='420' height='180'>
-        <text x='0' y='90' fill='rgba(120,120,120,0.07)'
+      <svg xmlns='http://www.w3.org/2000/svg' width='300' height='140'>
+        <text x='0' y='70' fill='rgba(110,110,110,0.13)'
               font-family='Inter, system-ui, sans-serif'
-              font-size='13' font-weight='600' letter-spacing='0.02em'
-              transform='rotate(-20 210 90)'>
+              font-size='14' font-weight='700' letter-spacing='0.02em'
+              transform='rotate(-22 150 70)'>
           ${safeLabel}
         </text>
       </svg>
