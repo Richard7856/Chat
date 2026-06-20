@@ -238,6 +238,28 @@ export async function secretboxOpen(
 }
 
 /**
+ * Empaqueta un SecretBox en un solo blob (nonce || ciphertext) para
+ * almacenarlo/transmitirlo como un BYTEA/base64 único. Inverso: unpackSecretBox.
+ */
+export function packSecretBox(box: SecretBox): Uint8Array {
+  const out = new Uint8Array(box.nonce.length + box.ciphertext.length);
+  out.set(box.nonce, 0);
+  out.set(box.ciphertext, box.nonce.length);
+  return out;
+}
+
+/** Inverso de packSecretBox: separa nonce(24) || ciphertext. */
+export function unpackSecretBox(blob: Uint8Array): SecretBox {
+  if (blob.length < nacl.secretbox.nonceLength) {
+    throw new Error("secretbox_blob_too_short");
+  }
+  return {
+    nonce: blob.subarray(0, nacl.secretbox.nonceLength),
+    ciphertext: blob.subarray(nacl.secretbox.nonceLength),
+  };
+}
+
+/**
  * "Sealed box" — cifrado anónimo hacia una llave pública (estilo
  * crypto_box_seal de libsodium, que tweetnacl no expone). Se usa para
  * cifrar la llave privada de identidad del usuario hacia la llave pública

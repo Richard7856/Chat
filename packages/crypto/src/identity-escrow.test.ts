@@ -11,6 +11,8 @@ import {
   randomSalt,
   secretboxSeal,
   secretboxOpen,
+  packSecretBox,
+  unpackSecretBox,
   sealedBoxSeal,
   sealedBoxOpen,
   generateIdentityKeypair,
@@ -71,6 +73,15 @@ describe("secretbox (envolver identidad con llave de contraseña)", () => {
     const box = await secretboxSeal(await encodeUtf8("integridad"), key);
     box.ciphertext[0] = box.ciphertext[0]! ^ 0xff; // flip un byte
     await expect(secretboxOpen(box, key)).rejects.toThrow();
+  });
+
+  it("pack/unpack: round-trip por blob único (nonce || ciphertext)", async () => {
+    const key = await deriveKeyFromPassword("password-para-pack-test", randomSalt());
+    const secret = (await generateIdentityKeypair()).privateKey;
+    const box = await secretboxSeal(secret, key);
+    const blob = packSecretBox(box);
+    const recovered = await secretboxOpen(unpackSecretBox(blob), key);
+    expect(recovered).toEqual(secret);
   });
 });
 
