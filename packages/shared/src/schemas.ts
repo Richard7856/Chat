@@ -336,6 +336,19 @@ export const RewrapIdentityRequestSchema = z.object({
 export type RewrapIdentityRequest = z.infer<typeof RewrapIdentityRequestSchema>;
 
 /**
+ * Respuesta de recuperación por escrow. El server, usando la llave de escrow
+ * de la organización, descifra la privada de identidad del usuario y la
+ * devuelve (vía TLS) para que el cliente la re-envuelva con su nueva
+ * contraseña. Se usa cuando el usuario olvidó la contraseña con la que se
+ * envolvió su identidad. CADA uso queda auditado (identity.escrow_recovery).
+ */
+export const IdentityRecoverResponseSchema = z.object({
+  privateKey: z.string(), // base64 — userPriv recuperada vía escrow
+  publicKey: z.string(), // base64 — userPub (para confirmar consistencia)
+});
+export type IdentityRecoverResponse = z.infer<typeof IdentityRecoverResponseSchema>;
+
+/**
  * Fase 26 (C4) — rotación de 2FA. Flujo de dos pasos:
  *
  *  1) POST /auth/totp/begin con totpToken actual:

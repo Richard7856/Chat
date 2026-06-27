@@ -152,26 +152,58 @@ export async function ensureUserIdentity(
     const salt = await fromBase64(status.pwSalt);
     const pwKey = await deriveKeyFromPassword(password, salt);
     const blob = await fromBase64(status.identityEncPw);
-    let privateKey: Uint8Array;
     try {
-      privateKey = await secretboxOpen(unpackSecretBox(blob), pwKey);
+      const privateKey = await secretboxOpen(unpackSecretBox(blob), pwKey);
+      const kp: IdentityKeypair = {
+        publicKey: await fromBase64(status.identityPublic!),
+        privateKey,
+      };
+      await saveUserIdentityLocal(userId, kp);
+      return kp;
     } catch {
-      // Contraseña no coincide con la que envolvió la identidad. Esto puede
-      // pasar si el server tiene la identidad pero el usuario entró con una
-      // password que aún no re-envolvió. Propagamos para que el caller decida
-      // (forzar recovery por escrow).
-      throw new Error("identity_password_mismatch");
+      // La contraseña no descifra la identidad: fue reseteada (admin o self)
+      // y el blob sigue envuelto con la contraseña vieja. Recuperamos vía
+      // escrow y re-envolvemos con la contraseña ACTUAL.
+      return recoverViaEscrowAndRewrap(userId, password);
     }
-    const kp: IdentityKeypair = {
-      publicKey: await fromBase64(status.identityPublic!),
-      privateKey,
-    };
-    await saveUserIdentityLocal(userId, kp);
-    return kp;
   }
 
   // 3. No tiene identidad → generar + enrollar.
   return enrollNewIdentity(userId, password);
+}
+
+/**
+ * Recupera la identidad vía escrow (el server la descifra con la llave de la
+ * organización) y la re-envuelve con la contraseña actual. Se dispara cuando
+ * la contraseña no descifra el blob (post-reset). Queda auditado en el server.
+ */
+async function recoverViaEscrowAndRewrap(
+  userId: string,
+  password: string,
+): Promise<IdentityKeypair> {
+  const recovered = await api<{ privateKey: string; publicKey: string }>(
+    "/auth/identity/recover",
+    { method: "POST", auth: true },
+  );
+  const privateKey = await fromBase64(recovered.privateKey);
+  const publicKey = await fromBase64(recovered.publicKey);
+
+  // Re-envolver con la contraseña actual y subir el nuevo blob.
+  const salt = randomSalt();
+  const pwKey = await deriveKeyFromPassword(password, salt);
+  const encPw = packSecretBox(await secretboxSeal(privateKey, pwKey));
+  await api("/auth/identity/rewrap", {
+    method: "POST",
+    auth: true,
+    body: {
+      identityEncPw: await toBase64(encPw),
+      pwSalt: await toBase64(salt),
+    },
+  });
+
+  const kp: IdentityKeypair = { publicKey, privateKey };
+  await saveUserIdentityLocal(userId, kp);
+  return kp;
 }
 
 /**

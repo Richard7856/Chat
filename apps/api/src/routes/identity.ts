@@ -15,12 +15,17 @@ import {
   EnrollIdentityRequestSchema,
   RewrapIdentityRequestSchema,
   type EscrowPubkeyResponse,
+  type IdentityRecoverResponse,
   type IdentityStatusResponse,
 } from "@euromex/shared";
+import { sealedBoxOpen, toBase64 } from "@euromex/crypto";
 import { requireAuth } from "../auth/jwt.js";
 import { pool } from "../db/pg.js";
+import { decryptSecret, loadMasterKey } from "../auth/crypto.js";
+import { config } from "../config.js";
 import {
   createUserIdentity,
+  getEscrowPrivateEnc,
   getEscrowPublicKey,
   getUserIdentity,
   rewrapUserIdentity,
@@ -53,6 +58,8 @@ async function audit(
 }
 
 export async function identityRoutes(app: FastifyInstance) {
+  const masterKey = loadMasterKey(config.masterEncKey);
+
   // GET /auth/identity — estado + blob para descifrar con la contraseña.
   app.get(
     "/auth/identity",
@@ -124,6 +131,58 @@ export async function identityRoutes(app: FastifyInstance) {
 
       await audit(req, "identity.enrolled");
       return reply.code(204).send();
+    },
+  );
+
+  // POST /auth/identity/recover — recuperación vía escrow.
+  //
+  // El usuario está autenticado (sesión válida) pero no pudo descifrar su
+  // identidad con la contraseña (la olvidó / fue reseteada). El server usa la
+  // llave de escrow de la organización para descifrar la privada del usuario
+  // y se la devuelve (vía TLS) para que el cliente la re-envuelva con su
+  // contraseña actual.
+  //
+  // Trade-off aceptado (ADR-040, Opción A): el server toca la privada en
+  // claro durante el recovery. CADA uso se audita.
+  app.post(
+    "/auth/identity/recover",
+    { preHandler: [requireAuth] },
+    async (req, reply): Promise<IdentityRecoverResponse> => {
+      const userId = req.session!.sub;
+
+      const identity = await getUserIdentity(userId);
+      if (!identity) {
+        return reply.code(404).send({ error: "no_identity" });
+      }
+
+      const escrowPrivEnc = await getEscrowPrivateEnc();
+      if (!escrowPrivEnc) {
+        return reply.code(503).send({ error: "escrow_not_initialized" });
+      }
+
+      let userPriv: Uint8Array;
+      try {
+        // Descifrar la privada de escrow con MASTER_ENC_KEY, luego abrir el
+        // sealed box de la identidad del usuario.
+        const escrowPriv = decryptSecret(masterKey, escrowPrivEnc);
+        userPriv = await sealedBoxOpen(
+          new Uint8Array(identity.identityEncEscrow),
+          new Uint8Array(escrowPriv),
+        );
+      } catch (err) {
+        req.log.error({ err, userId }, "escrow recovery failed");
+        return reply.code(500).send({ error: "escrow_recovery_failed" });
+      }
+
+      // Auditoría CRÍTICA: cada uso del escrow queda registrado.
+      await audit(req, "identity.escrow_recovery", {
+        recoveredUserId: userId,
+      });
+
+      return {
+        privateKey: await toBase64(userPriv),
+        publicKey: identity.identityPublic.toString("base64"),
+      };
     },
   );
 
