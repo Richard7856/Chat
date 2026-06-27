@@ -62,6 +62,7 @@ export function saveSession(session: StoredSession) {
   // La página de login lo lee para ofrecer re-auth con solo TOTP.
   _saveDeviceHint({
     deviceId: session.device.id,
+    userId: session.user.id,
     username: session.user.username,
     displayName: session.user.displayName,
   });
@@ -81,6 +82,8 @@ const DEVICE_HINT_KEY = "euromex.device-hint";
 /** Datos mínimos del dispositivo conocido, usados en el login rápido. */
 export interface DeviceHint {
   deviceId: string;
+  /** Fase 31: para cargar la identidad de usuario cacheada en este device. */
+  userId?: string;
   username: string;
   displayName: string;
 }

@@ -39,7 +39,7 @@ function normalizeEnvelopes(raw: unknown): IncomingEnvelope[] | null {
   const out: IncomingEnvelope[] = [];
   for (const item of raw as EnvelopeInput[]) {
     if (
-      typeof item?.recipientDeviceId !== "string" ||
+      typeof item?.recipientUserId !== "string" ||
       typeof item?.ciphertext !== "string" ||
       typeof item?.nonce !== "string"
     ) {
@@ -47,7 +47,7 @@ function normalizeEnvelopes(raw: unknown): IncomingEnvelope[] | null {
     }
     try {
       out.push({
-        recipientDeviceId: item.recipientDeviceId,
+        recipientUserId: item.recipientUserId,
         ciphertext: Buffer.from(item.ciphertext, "base64"),
         nonce: Buffer.from(item.nonce, "base64"),
       });
@@ -245,10 +245,11 @@ export function registerSocketIO(app: FastifyInstance): IOServer {
           }
         }).catch(() => {});  // push es best-effort, nunca rompe el flujo del mensaje
 
-        // ACK al emisor con la vista del mensaje "sin sobre propio";
-        // el emisor renderiza su propio plaintext porque ya lo tiene.
+        // ACK al emisor con la vista del mensaje. El emisor renderiza su
+        // propio plaintext porque ya lo tiene; el envelope propio (cifrado a
+        // su identidad de usuario) sirve para sus OTROS devices.
         const ownEnv = res.envelopes.find(
-          (e) => e.recipientDeviceId === session.did,
+          (e) => e.recipientUserId === session.sub,
         );
         ack?.({
           ok: true,
@@ -303,7 +304,7 @@ function fanOutMessage(
     senderDeviceId: string;
     contentType: string;
     envelopes: Array<{
-      recipientDeviceId: string;
+      recipientUserId: string;
       ciphertext: Buffer;
       nonce: Buffer;
     }>;
@@ -324,8 +325,12 @@ function fanOutMessage(
     deletedByUserId: null,
   };
 
+  // Fase 31: un envelope por usuario → emitir a su USER_ROOM (todos sus
+  // devices reciben el mismo envelope y lo descifran con la identidad
+  // compartida). Se emite también al usuario emisor: el device que envió
+  // ya tiene el plaintext (deduplica), pero sus OTROS devices lo descifran
+  // → sincronización multi-device también para el emisor.
   for (const env of params.envelopes) {
-    if (env.recipientDeviceId === params.senderDeviceId) continue;
     const msg: Message = {
       ...base,
       envelope: {
@@ -333,7 +338,7 @@ function fanOutMessage(
         nonce: env.nonce.toString("base64"),
       },
     };
-    io.to(DEVICE_ROOM(env.recipientDeviceId)).emit("message:new", msg);
+    io.to(USER_ROOM(env.recipientUserId)).emit("message:new", msg);
   }
 }
 

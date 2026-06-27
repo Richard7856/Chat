@@ -15,7 +15,7 @@ import {
   UserPlus,
 } from "lucide-react";
 import { api, saveSession } from "../lib/api";
-import { ensureDeviceKeypair } from "../lib/keys";
+import { ensureUserIdentity } from "../lib/identity";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
@@ -116,7 +116,9 @@ function EnrollContent() {
         },
       });
       saveSession(res);
-      await ensureDeviceKeypair(res.device.id);
+      // Fase 31: genera la identidad de usuario y la enrolla (envuelta con la
+      // contraseña + con la llave de escrow).
+      await ensureUserIdentity(res.user.id, password);
       router.push("/app/chat");
     } catch (err) {
       setError(err instanceof Error ? err.message : "error");

@@ -521,8 +521,10 @@ export const Base64Schema = z
   .string()
   .regex(/^[A-Za-z0-9+/]+={0,2}$/, "base64 esperado");
 
+// Fase 31: el envelope ahora se dirige a un USUARIO (su identidad compartida
+// entre devices), no a un device. Un envelope por usuario destinatario.
 export const EnvelopeInputSchema = z.object({
-  recipientDeviceId: z.string().uuid(),
+  recipientUserId: z.string().uuid(),
   ciphertext: Base64Schema,
   nonce: Base64Schema,
 });
@@ -607,21 +609,17 @@ export const AddEnvelopesRequestSchema = z.object({
 });
 export type AddEnvelopesRequest = z.infer<typeof AddEnvelopesRequestSchema>;
 
-export const PublishIdentityRequestSchema = z.object({
-  identityPublicKey: Base64Schema,
-});
-export type PublishIdentityRequest = z.infer<
-  typeof PublishIdentityRequestSchema
->;
-
-export const DeviceKeySchema = z.object({
-  deviceId: z.string().uuid(),
+/**
+ * Fase 31: claves públicas por USUARIO de una conversación. El cliente cifra
+ * un envelope por usuario miembro usando su identityPublicKey. Reemplaza el
+ * modelo previo de claves por device (DeviceKeySchema).
+ */
+export const UserKeySchema = z.object({
   userId: z.string().uuid(),
   identityPublicKey: Base64Schema.nullable(),
-  deviceName: z.string(),
-  platform: DevicePlatformSchema,
+  displayName: z.string(),
 });
-export type DeviceKey = z.infer<typeof DeviceKeySchema>;
+export type UserKey = z.infer<typeof UserKeySchema>;
 
 // ============================================================================
 // Adjuntos (Fase 5 + Fase 14) — archivos cifrados E2EE

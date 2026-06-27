@@ -31,9 +31,9 @@ import type {
   AttachmentPayload,
   AttachmentRestrictedPayload,
   Conversation,
-  DeviceKey,
   Message,
   SystemEvent,
+  UserKey,
 } from "@euromex/shared";
 import {
   ACTIVITY_CONTENT_TYPE,
@@ -53,7 +53,7 @@ import {
   type IdentityKeypair,
 } from "@euromex/crypto";
 import { api, clearSession, loadSession } from "../../lib/api";
-import { ensureDeviceKeypair, clearKeypair } from "../../lib/keys";
+import { loadUserIdentityLocal } from "../../lib/identity";
 import { closeSocket, getSocket } from "../../lib/socket";
 import { encryptAndUpload } from "../../lib/attachments";
 import { applyShareExternallyPolicy } from "../../lib/native";
@@ -126,7 +126,8 @@ interface RenderedMessage extends Message {
   systemEvent?: SystemEvent;
 }
 
-type DeviceKeyMap = Record<string, DeviceKey>;
+// Fase 31: claves por USUARIO (keyed por userId), no por device.
+type UserKeyMap = Record<string, UserKey>;
 
 export default function ChatPage() {
   const router = useRouter();
@@ -184,20 +185,11 @@ export default function ChatPage() {
   // Sin esto, el toggle de `disabled` durante onSend hace que React pierda el foco.
   const composerRef = useRef<HTMLInputElement>(null);
   const selectedIdRef = useRef<string | null>(null);
-  const deviceKeysRef = useRef<DeviceKeyMap>({});
-  // Fase 23b — ref que espeja `messages` para que el backfill pueda leer
-  // los plaintexts ya descifrados desde dentro de un socket handler sin
-  // forzar re-renders ni romper closures.
+  // Fase 31: claves de identidad por usuario de la conversación (keyed userId).
+  const userKeysRef = useRef<UserKeyMap>({});
+  // Ref que espeja `messages` para leer plaintexts descifrados desde socket
+  // handlers sin forzar re-renders ni romper closures.
   const messagesRef = useRef<RenderedMessage[]>([]);
-  // Fase 23b — set de deviceIds que ya hemos procesado para backfill,
-  // para no repetir trabajo si el evento llega varias veces.
-  const backfilledDevicesRef = useRef<Set<string>>(new Set());
-  // Fase 23b — ref a la función de backfill. Permite que el socket
-  // listener (declarado arriba en el archivo) llame al backfill
-  // (declarado abajo) sin depender del orden ni de las dep arrays.
-  const backfillFnRef = useRef<
-    (deviceId: string, identityPublicKey: string) => Promise<void>
-  >(async () => {});
 
   const selectedConv = useMemo(
     () => conversations.find((c) => c.id === selectedId) ?? null,
@@ -251,7 +243,7 @@ export default function ChatPage() {
       if (!msg.envelope) {
         return { ...msg, plaintext: null, status: "no_envelope" };
       }
-      const senderKey = deviceKeysRef.current[msg.senderDeviceId];
+      const senderKey = userKeysRef.current[msg.senderUserId];
       if (!senderKey?.identityPublicKey) {
         return { ...msg, plaintext: null, status: "decrypt_error" };
       }
@@ -294,14 +286,14 @@ export default function ChatPage() {
     setConversations(r.conversations);
   }, []);
 
-  const refreshDeviceKeys = useCallback(async (conversationId: string) => {
-    const r = await api<{ devices: DeviceKey[] }>(
-      `/conversations/${conversationId}/device-keys`,
+  const refreshUserKeys = useCallback(async (conversationId: string) => {
+    const r = await api<{ users: UserKey[] }>(
+      `/conversations/${conversationId}/user-keys`,
       { method: "GET", auth: true },
     );
-    const map: DeviceKeyMap = {};
-    for (const d of r.devices) map[d.deviceId] = d;
-    deviceKeysRef.current = { ...deviceKeysRef.current, ...map };
+    const map: UserKeyMap = {};
+    for (const u of r.users) map[u.userId] = u;
+    userKeysRef.current = { ...userKeysRef.current, ...map };
   }, []);
 
   // ---------------- Bootstrap ----------------
@@ -318,7 +310,16 @@ export default function ChatPage() {
           auth: true,
         });
         setMe(meRes);
-        const kp = await ensureDeviceKeypair(meRes.device.id);
+        // Fase 31: la identidad de cifrado es por usuario y se establece al
+        // hacer login con contraseña (lib/identity). Aquí solo la cargamos
+        // del cache local de este device. Si no está (este device nunca hizo
+        // login completo con password), forzamos login completo para
+        // descifrarla/recuperarla.
+        const kp = await loadUserIdentityLocal(meRes.user.id);
+        if (!kp) {
+          router.replace("/login");
+          return;
+        }
         setMyKeypair(kp);
         await refreshConversations();
       } catch (err) {
@@ -376,9 +377,9 @@ export default function ChatPage() {
     const socket = getSocket();
 
     const onNew = async (msg: Message) => {
-      if (!deviceKeysRef.current[msg.senderDeviceId]) {
+      if (!userKeysRef.current[msg.senderUserId]) {
         try {
-          await refreshDeviceKeys(msg.conversationId);
+          await refreshUserKeys(msg.conversationId);
         } catch {}
       }
       const rendered = await decryptMessage(msg, myKeypair);
@@ -449,70 +450,6 @@ export default function ChatPage() {
       );
     };
 
-    // Fase 23b — un device de algún peer publicó su identity pública.
-    // Si es un device nuevo (no registrado en backfilledDevicesRef) y NO
-    // soy yo mismo, intentamos re-cifrar nuestros mensajes para él.
-    const onDevicePublished = (p: {
-      userId: string;
-      deviceId: string;
-      identityPublicKey: string;
-    }) => {
-      // Refrescar el cache de device keys de la conversación activa para
-      // que el próximo envío incluya este device automáticamente.
-      if (selectedIdRef.current) {
-        void refreshDeviceKeys(selectedIdRef.current);
-      }
-      // Backfill via ref (la función está declarada más abajo en el archivo).
-      void backfillFnRef.current(p.deviceId, p.identityPublicKey);
-    };
-
-    // Fase 23b — el server agregó un envelope para un mensaje que ya tenía
-    // YO en memoria (probablemente como "no_envelope"). Lo descifro y
-    // actualizo el render.
-    const onEnvelopeAdded = async (p: {
-      messageId: string;
-      conversationId: string;
-      envelope: { ciphertext: string; nonce: string };
-      senderUserId: string;
-      senderDeviceId: string;
-      contentType: string;
-      createdAt: string;
-    }) => {
-      if (!myKeypair) return;
-      // Asegurar que tenemos la clave del sender en cache
-      if (!deviceKeysRef.current[p.senderDeviceId]) {
-        try {
-          await refreshDeviceKeys(p.conversationId);
-        } catch {}
-      }
-      const fakeMsg: Message = {
-        id: p.messageId,
-        conversationId: p.conversationId,
-        senderUserId: p.senderUserId,
-        senderDeviceId: p.senderDeviceId,
-        content: null,
-        contentType: p.contentType,
-        envelope: p.envelope,
-        createdAt: p.createdAt,
-        editedAt: null,
-        editCount: 0,
-        deletedAt: null,
-        deletedByUserId: null,
-      };
-      const rendered = await decryptMessage(fakeMsg, myKeypair);
-      setMessages((prev) => {
-        // Si el mensaje ya estaba en la lista, REEMPLAZAR (cambiamos
-        // status no_envelope → ok). Si no estaba (otra conversación o
-        // fuera del rango cargado), no hacemos nada — lo veremos al
-        // re-cargar la conversación.
-        const idx = prev.findIndex((m) => m.id === p.messageId);
-        if (idx < 0) return prev;
-        const next = [...prev];
-        next[idx] = rendered;
-        return next;
-      });
-    };
-
     // Fase 25 — el sender editó el mensaje y el server me mandó el envelope
     // re-cifrado. Descifro y reemplazo el bubble in-place con el nuevo
     // plaintext + indicador "(editado)".
@@ -526,10 +463,10 @@ export default function ChatPage() {
       if (!myKeypair) return;
       const existing = messagesRef.current.find((m) => m.id === p.messageId);
       if (!existing) return; // mensaje no cargado, no hacemos nada
-      // Asegurar que tenemos la pubkey del sender
-      if (!deviceKeysRef.current[existing.senderDeviceId]) {
+      // Asegurar que tenemos la pubkey de identidad del sender
+      if (!userKeysRef.current[existing.senderUserId]) {
         try {
-          await refreshDeviceKeys(p.conversationId);
+          await refreshUserKeys(p.conversationId);
         } catch {}
       }
       const fakeMsg: Message = {
@@ -574,8 +511,6 @@ export default function ChatPage() {
     socket.on("user:online", onUserOnline);
     socket.on("user:offline", onUserOffline);
     socket.on("message:read", onMessageRead);
-    socket.on("device:identity-published", onDevicePublished);
-    socket.on("message:envelope-added", onEnvelopeAdded);
     socket.on("message:edited", onMessageEdited);
     socket.on("message:deleted", onMessageDeleted);
     return () => {
@@ -584,107 +519,24 @@ export default function ChatPage() {
       socket.off("user:online", onUserOnline);
       socket.off("user:offline", onUserOffline);
       socket.off("message:read", onMessageRead);
-      socket.off("device:identity-published", onDevicePublished);
-      socket.off("message:envelope-added", onEnvelopeAdded);
       socket.off("message:edited", onMessageEdited);
       socket.off("message:deleted", onMessageDeleted);
     };
-  }, [me, myKeypair, decryptMessage, refreshDeviceKeys]);
+  }, [me, myKeypair, decryptMessage, refreshUserKeys]);
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
-  // Fase 23b — mantener messagesRef sincronizado para que el backfill async
-  // pueda leer el estado actual sin pasar por React state.
+  // Mantener messagesRef sincronizado para leer el estado actual desde
+  // socket handlers async (ej. message:edited) sin pasar por React state.
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
 
-  /**
-   * Fase 23b — Multi-device backfill.
-   *
-   * Cuando un device nuevo aparece en alguna conversación (porque se acaba de
-   * publicar su identity public key), nosotros — como otro device del mismo
-   * o de otro miembro — re-ciframos los mensajes que NOSOTROS enviamos para
-   * este device, y los publicamos vía POST /messages/:id/envelopes.
-   *
-   * Solo podemos backfillear mensajes:
-   *  - Que YO envié (status === "ok" Y senderUserId === me.user.id)
-   *  - Que tienen plaintext en memoria
-   *  - Cuyo contentType es E2EE (text/plain o attachment json) — los
-   *    system/activity/task messages NO son E2EE.
-   *
-   * Es no-op para nuestro propio device (newDeviceId === me.device.id).
-   * Idempotente del lado del servidor (ON CONFLICT DO NOTHING).
-   */
-  const backfillEnvelopesForDevice = useCallback(
-    async (newDeviceId: string, identityPublicKey: string): Promise<void> => {
-      if (!me || !myKeypair) return;
-      if (newDeviceId === me.device.id) return;
-      if (backfilledDevicesRef.current.has(newDeviceId)) return;
-      backfilledDevicesRef.current.add(newDeviceId);
-
-      let peerPub: Uint8Array;
-      try {
-        peerPub = await fromBase64(identityPublicKey);
-      } catch {
-        return;
-      }
-
-      const candidates = messagesRef.current.filter((m) => {
-        if (m.senderUserId !== me.user.id) return false;
-        if (m.status !== "ok") return false;
-        if (!m.plaintext) return false;
-        // Skip non-E2EE content types
-        if (
-          m.contentType === SYSTEM_CONTENT_TYPE ||
-          m.contentType === ACTIVITY_CONTENT_TYPE ||
-          m.contentType === TASK_CONTENT_TYPE
-        ) return false;
-        return true;
-      });
-
-      if (candidates.length === 0) return;
-
-      // Procesa de a 25 mensajes por batch para no inundar la red.
-      const BATCH = 25;
-      for (let i = 0; i < candidates.length; i += BATCH) {
-        const slice = candidates.slice(i, i + BATCH);
-        await Promise.all(
-          slice.map(async (msg) => {
-            try {
-              const ptBytes = await encodeUtf8(msg.plaintext!);
-              const env = await encryptFor(ptBytes, peerPub, myKeypair.privateKey);
-              await api(`/messages/${msg.id}/envelopes`, {
-                method: "POST",
-                auth: true,
-                body: {
-                  envelopes: [
-                    {
-                      recipientDeviceId: newDeviceId,
-                      ciphertext: await toBase64(env.ciphertext),
-                      nonce: await toBase64(env.nonce),
-                    },
-                  ],
-                },
-              });
-            } catch (err) {
-              // No es crítico: si un mensaje falla, los demás sí progresan.
-              // eslint-disable-next-line no-console
-              console.warn("[backfill] failed for", msg.id, err);
-            }
-          }),
-        );
-      }
-    },
-    [me, myKeypair],
-  );
-
-  // Mantener el ref siempre apuntando a la última versión de la función.
-  useEffect(() => {
-    backfillFnRef.current = backfillEnvelopesForDevice;
-  }, [backfillEnvelopesForDevice]);
+  // Fase 31: el backfill (Fase 23b) se eliminó. Con identidad por usuario,
+  // todos los devices comparten la misma llave → no hay que re-cifrar por
+  // device cuando aparece uno nuevo.
 
   // ---------------- Carga mensajes al cambiar conv ----------------
   useEffect(() => {
@@ -694,7 +546,7 @@ export default function ChatPage() {
     }
     const convId = selectedId;
     (async () => {
-      await refreshDeviceKeys(convId);
+      await refreshUserKeys(convId);
       const r = await api<{ messages: Message[] }>(
         `/conversations/${convId}/messages?limit=50`,
         { method: "GET", auth: true },
@@ -703,9 +555,6 @@ export default function ChatPage() {
         r.messages.map((m) => decryptMessage(m, myKeypair)),
       );
       setMessages(rendered);
-      // Sincronizar el ref ANTES de disparar backfill — el backfill lee
-      // messagesRef.current y queremos que ya tenga los mensajes recién
-      // descargados.
       messagesRef.current = rendered;
       // Fase 26 (I4) — reset paginación al cambiar de conv. Si el primer
       // batch ya vino incompleto (< limit), no hay nada anterior que cargar.
@@ -722,21 +571,8 @@ export default function ChatPage() {
       setConversations((prev) =>
         prev.map((c) => (c.id === convId ? { ...c, unreadCount: 0 } : c)),
       );
-
-      // Fase 23b — backfill al cambiar de conversación: si la conversación
-      // tiene devices con identity publicada que no hemos backfilleado,
-      // procesar ahora. Esto cubre el caso "el usuario abre una conv vieja
-      // donde el peer agregó un device hace tiempo".
-      const allDevices = Object.values(deviceKeysRef.current);
-      for (const d of allDevices) {
-        if (!d.identityPublicKey) continue;
-        if (d.deviceId === me?.device.id) continue;
-        if (backfilledDevicesRef.current.has(d.deviceId)) continue;
-        // No await — corren en background, no bloquear el render.
-        void backfillFnRef.current(d.deviceId, d.identityPublicKey);
-      }
     })();
-  }, [selectedId, myKeypair, refreshDeviceKeys, decryptMessage, me]);
+  }, [selectedId, myKeypair, refreshUserKeys, decryptMessage, me]);
 
   // Fase 26 (I4) — fetch del batch anterior usando created_at del mensaje
   // más viejo como cursor. El server ya soporta ?before=<iso-date>; aquí
@@ -815,12 +651,12 @@ export default function ChatPage() {
       mentionedUserIds?: string[];
     }): Promise<void> => {
       if (!selectedId || !myKeypair) throw new Error("no_conversation");
-      await refreshDeviceKeys(selectedId);
-      const recipients = Object.values(deviceKeysRef.current).filter(
-        (d) => d.identityPublicKey,
+      await refreshUserKeys(selectedId);
+      const recipients = Object.values(userKeysRef.current).filter(
+        (u) => u.identityPublicKey,
       );
       if (recipients.length === 0) {
-        throw new Error("No hay dispositivos con clave pública publicada.");
+        throw new Error("No hay usuarios con identidad publicada.");
       }
 
       const restrictedBytes =
@@ -828,19 +664,19 @@ export default function ChatPage() {
           ? await encodeUtf8(JSON.stringify(params.attachmentRestricted))
           : null;
 
+      // Fase 31: un envelope por USUARIO. Para adjuntos restringidos, los
+      // usuarios fuera de allowedUserIds reciben el payload sin las llaves.
       const envelopes = await Promise.all(
-        recipients.map(async (d) => {
-          const peerPub = await fromBase64(d.identityPublicKey!);
-          // Para adjuntos restringidos, encriptar con payload diferente
-          // según si el dispositivo pertenece a un usuario con acceso.
+        recipients.map(async (u) => {
+          const peerPub = await fromBase64(u.identityPublicKey!);
           const payload =
             restrictedBytes && params.allowedUserIds &&
-            !params.allowedUserIds.includes(d.userId)
+            !params.allowedUserIds.includes(u.userId)
               ? restrictedBytes
               : params.plaintextBytes;
           const env = await encryptFor(payload, peerPub, myKeypair.privateKey);
           return {
-            recipientDeviceId: d.deviceId,
+            recipientUserId: u.userId,
             ciphertext: await toBase64(env.ciphertext),
             nonce: await toBase64(env.nonce),
           };
@@ -883,7 +719,7 @@ export default function ChatPage() {
         ];
       });
     },
-    [selectedId, myKeypair, refreshDeviceKeys],
+    [selectedId, myKeypair, refreshUserKeys],
   );
 
   // Fase 17: toggle estrella en un mensaje
@@ -1004,19 +840,19 @@ export default function ChatPage() {
     const messageId = editingMessageId;
     setSending(true);
     try {
-      await refreshDeviceKeys(selectedId);
-      const recipients = Object.values(deviceKeysRef.current).filter(
-        (d) => d.identityPublicKey,
+      await refreshUserKeys(selectedId);
+      const recipients = Object.values(userKeysRef.current).filter(
+        (u) => u.identityPublicKey,
       );
       if (recipients.length === 0) throw new Error("no_recipients");
 
       const ptBytes = await encodeUtf8(text);
       const envelopes = await Promise.all(
-        recipients.map(async (d) => {
-          const peerPub = await fromBase64(d.identityPublicKey!);
+        recipients.map(async (u) => {
+          const peerPub = await fromBase64(u.identityPublicKey!);
           const env = await encryptFor(ptBytes, peerPub, myKeypair.privateKey);
           return {
-            recipientDeviceId: d.deviceId,
+            recipientUserId: u.userId,
             ciphertext: await toBase64(env.ciphertext),
             nonce: await toBase64(env.nonce),
           };

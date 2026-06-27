@@ -9,7 +9,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { api, saveSession } from "../../lib/api";
-import { ensureDeviceKeypair } from "../../lib/keys";
+import { ensureUserIdentity } from "../../lib/identity";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
@@ -122,7 +122,9 @@ export default function ForcedChangePage() {
       });
       clearChangeContext();
       saveSession(res);
-      await ensureDeviceKeypair(res.device.id);
+      // Fase 31: tras el cambio forzado (post admin-reset), la identidad se
+      // recupera vía escrow y se re-envuelve con la contraseña nueva.
+      await ensureUserIdentity(res.user.id, newPassword);
       router.push("/app/chat");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "error";

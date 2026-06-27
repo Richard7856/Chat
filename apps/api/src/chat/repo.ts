@@ -2,9 +2,9 @@ import type {
   Conversation,
   ConversationMember,
   ConversationType,
-  DeviceKey,
   Message,
   SystemActor,
+  UserKey,
 } from "@euromex/shared";
 import { pool } from "../db/pg.js";
 
@@ -23,7 +23,7 @@ export async function loadSystemActor(userId: string): Promise<SystemActor | nul
 }
 
 export interface IncomingEnvelope {
-  recipientDeviceId: string;
+  recipientUserId: string;
   ciphertext: Buffer;
   nonce: Buffer;
 }
@@ -285,7 +285,7 @@ export async function insertEncryptedMessage(params: {
 }): Promise<{
   messageId: string;
   createdAt: Date;
-  envelopes: Array<{ recipientDeviceId: string; ciphertext: Buffer; nonce: Buffer }>;
+  envelopes: Array<{ recipientUserId: string; ciphertext: Buffer; nonce: Buffer }>;
 }> {
   const client = await pool.connect();
   try {
@@ -307,10 +307,10 @@ export async function insertEncryptedMessage(params: {
 
     for (const env of params.envelopes) {
       await client.query(
-        `INSERT INTO message_envelopes (message_id, recipient_device, ciphertext, nonce)
+        `INSERT INTO message_envelopes (message_id, recipient_user, ciphertext, nonce)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT DO NOTHING`,
-        [messageId, env.recipientDeviceId, env.ciphertext, env.nonce],
+        [messageId, env.recipientUserId, env.ciphertext, env.nonce],
       );
     }
 
@@ -382,48 +382,32 @@ export async function insertSystemMessage(params: {
 }
 
 /**
- * Fetch todos los dispositivos activos de los miembros de una conversación
- * (incluyendo los propios del caller). El cliente los necesita para cifrar
- * el mensaje una vez por dispositivo.
+ * Fase 31: claves públicas de identidad por USUARIO de los miembros de una
+ * conversación (incluyendo el caller). El cliente cifra un envelope por
+ * usuario usando su identityPublicKey. Solo usuarios con identidad enrollada
+ * (user_identities) aparecen con clave; el resto con null (aún sin entrar).
  */
-export async function getConversationDeviceKeys(
+export async function getConversationUserKeys(
   conversationId: string,
-): Promise<DeviceKey[]> {
+): Promise<UserKey[]> {
   const r = await pool.query<{
-    device_id: string;
     user_id: string;
-    identity_public_key: Buffer | null;
-    device_name: string;
-    platform: "web" | "ios" | "android" | "desktop";
+    identity_public: Buffer | null;
+    display_name: string;
   }>(
-    `SELECT d.id AS device_id, d.user_id,
-            d.identity_public_key, d.device_name, d.platform
-       FROM devices d
-       JOIN conversation_members m ON m.user_id = d.user_id
-      WHERE m.conversation_id = $1 AND d.status = 'active'
-      ORDER BY d.user_id, d.created_at`,
+    `SELECT u.id AS user_id, ui.identity_public, u.display_name
+       FROM conversation_members m
+       JOIN users u ON u.id = m.user_id
+       LEFT JOIN user_identities ui ON ui.user_id = u.id
+      WHERE m.conversation_id = $1 AND u.status = 'active'
+      ORDER BY u.id`,
     [conversationId],
   );
   return r.rows.map((row) => ({
-    deviceId: row.device_id,
     userId: row.user_id,
-    identityPublicKey: row.identity_public_key
-      ? row.identity_public_key.toString("base64")
-      : null,
-    deviceName: row.device_name,
-    platform: row.platform,
+    identityPublicKey: row.identity_public ? row.identity_public.toString("base64") : null,
+    displayName: row.display_name,
   }));
-}
-
-export async function publishDeviceIdentity(
-  deviceId: string,
-  identityPublicKey: Buffer,
-): Promise<void> {
-  await pool.query(
-    `UPDATE devices SET identity_public_key = $2
-      WHERE id = $1`,
-    [deviceId, identityPublicKey],
-  );
 }
 
 /**
@@ -444,36 +428,7 @@ export async function getRelatedUserIds(userId: string): Promise<string[]> {
 }
 
 /**
- * Fase 23b — Agrega envelopes adicionales a un mensaje existente.
- * Idempotente: ON CONFLICT (message_id, recipient_device) DO NOTHING.
- *
- * Devuelve la lista de devices a los que SÍ se les insertó (excluye los
- * que ya tenían envelope). Útil para emitir socket events solo a quienes
- * realmente recibieron algo nuevo.
- */
-export async function addMessageEnvelopes(
-  messageId: string,
-  envelopes: IncomingEnvelope[],
-): Promise<string[]> {
-  if (envelopes.length === 0) return [];
-
-  const recipientIds = envelopes.map((e) => e.recipientDeviceId);
-  const ciphertexts = envelopes.map((e) => e.ciphertext);
-  const nonces = envelopes.map((e) => e.nonce);
-
-  const r = await pool.query<{ recipient_device: string }>(
-    `INSERT INTO message_envelopes (message_id, recipient_device, ciphertext, nonce)
-     SELECT $1, UNNEST($2::uuid[]), UNNEST($3::bytea[]), UNNEST($4::bytea[])
-     ON CONFLICT (message_id, recipient_device) DO NOTHING
-     RETURNING recipient_device`,
-    [messageId, recipientIds, ciphertexts, nonces],
-  );
-  return r.rows.map((row) => row.recipient_device);
-}
-
-/**
- * Fase 23b — Devuelve los datos básicos de un mensaje para validar permiso
- * de backfill. Solo el sender original puede agregar envelopes.
+ * Devuelve los datos básicos de un mensaje (sender, conversación, tipo).
  */
 export async function getMessageMeta(
   messageId: string,
@@ -505,22 +460,6 @@ export async function getMessageMeta(
     contentType: row.content_type,
     createdAt: row.created_at,
   };
-}
-
-/** Fase 23b — Verifica que un device ID pertenezca a algún miembro activo
- *  de la conversación dada (necesario para validar el destinatario en
- *  `addMessageEnvelopes`). */
-export async function deviceIsInConversation(
-  deviceId: string,
-  conversationId: string,
-): Promise<boolean> {
-  const r = await pool.query(
-    `SELECT 1 FROM devices d
-       JOIN conversation_members cm ON cm.user_id = d.user_id
-      WHERE d.id = $1 AND cm.conversation_id = $2 AND d.status = 'active'`,
-    [deviceId, conversationId],
-  );
-  return (r.rowCount ?? 0) > 0;
 }
 
 /**
@@ -591,8 +530,8 @@ export async function editMessage(params: {
     const archiveVersion = row.edit_count + 1;
     await client.query(
       `INSERT INTO message_envelopes_history
-         (message_id, version_number, recipient_device, ciphertext, nonce)
-       SELECT message_id, $2, recipient_device, ciphertext, nonce
+         (message_id, version_number, recipient_user, ciphertext, nonce)
+       SELECT message_id, $2, recipient_user, ciphertext, nonce
          FROM message_envelopes WHERE message_id = $1`,
       [params.messageId, archiveVersion],
     );
@@ -604,10 +543,10 @@ export async function editMessage(params: {
     );
     for (const env of params.envelopes) {
       await client.query(
-        `INSERT INTO message_envelopes (message_id, recipient_device, ciphertext, nonce)
+        `INSERT INTO message_envelopes (message_id, recipient_user, ciphertext, nonce)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT DO NOTHING`,
-        [params.messageId, env.recipientDeviceId, env.ciphertext, env.nonce],
+        [params.messageId, env.recipientUserId, env.ciphertext, env.nonce],
       );
     }
 
@@ -695,14 +634,14 @@ export async function deleteMessage(params: {
  */
 export async function listMessages(params: {
   conversationId: string;
-  requesterDeviceId: string;
+  requesterUserId: string;
   /** Si false, filtra los mensajes de sistema (avisos) del historial. */
   requesterWatchesAlerts: boolean;
   limit: number;
   before?: string;
 }): Promise<Message[]> {
-  const { conversationId, requesterDeviceId, requesterWatchesAlerts, limit, before } = params;
-  const values: unknown[] = [conversationId, requesterDeviceId, limit];
+  const { conversationId, requesterUserId, requesterWatchesAlerts, limit, before } = params;
+  const values: unknown[] = [conversationId, requesterUserId, limit];
   let beforeClause = "";
   if (before) {
     values.push(before);
@@ -734,7 +673,7 @@ export async function listMessages(params: {
             e.ciphertext, e.nonce
        FROM messages m
        LEFT JOIN message_envelopes e
-         ON e.message_id = m.id AND e.recipient_device = $2
+         ON e.message_id = m.id AND e.recipient_user = $2
       WHERE m.conversation_id = $1
         ${beforeClause}
         ${systemFilter}

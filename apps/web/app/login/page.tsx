@@ -21,8 +21,7 @@ import {
   saveSession,
   type DeviceHint,
 } from "../lib/api";
-import { ensureDeviceKeypair } from "../lib/keys";
-import { loadKeypair } from "../lib/keys";
+import { ensureUserIdentity, loadUserIdentityLocal } from "../lib/identity";
 import {
   clearBiometricUnlock,
   hasLocalBiometricFlag,
@@ -110,7 +109,9 @@ export default function LoginPage() {
     (async () => {
       const h = loadDeviceHint();
       if (h) {
-        const kp = await loadKeypair(h.deviceId);
+        // Fase 31: el modo rápido/biométrico requiere la identidad de usuario
+        // cacheada en este device (establecida en un login completo previo).
+        const kp = h.userId ? await loadUserIdentityLocal(h.userId) : null;
         if (kp) {
           setHint(h);
           // Solo entramos a "biometric" si: (a) flag local dice que está
@@ -146,7 +147,8 @@ export default function LoginPage() {
         body: { biometricToken: unlocked.token },
       });
       saveSession(res);
-      await ensureDeviceKeypair(res.device.id);
+      // Fase 31: la identidad de usuario ya está cacheada en este device
+      // (el modo biométrico solo se ofrece si existe). El chat la carga.
       router.push("/app/chat");
     } catch (err) {
       const code = err instanceof Error ? err.message : "error";
@@ -186,8 +188,8 @@ export default function LoginPage() {
         body: { deviceId: hint.deviceId, totpToken },
       });
       saveSession(res);
-      // ensureDeviceKeypair es idempotente — devuelve el keypair existente
-      await ensureDeviceKeypair(res.device.id);
+      // Fase 31: identidad de usuario ya cacheada en este device (el modo
+      // rápido solo se ofrece si existe). El chat la carga del cache local.
       router.push("/app/chat");
     } catch (err) {
       const code = err instanceof Error ? err.message : "error";
@@ -238,7 +240,9 @@ export default function LoginPage() {
       }
 
       saveSession(res);
-      await ensureDeviceKeypair(res.device.id);
+      // Fase 31: establece (o descifra/recupera) la identidad de usuario con
+      // la contraseña, y la cachea en este device para reauth/biometría.
+      await ensureUserIdentity(res.user.id, password);
       router.push("/app/chat");
     } catch (err) {
       setError(humanizeError(err instanceof Error ? err.message : "error"));

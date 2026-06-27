@@ -1,35 +1,30 @@
 import type { FastifyInstance } from "fastify";
 import { Server as SocketIOServer } from "socket.io";
 import {
-  AddEnvelopesRequestSchema,
   CreateConversationRequestSchema,
   EditMessageRequestSchema,
-  PublishIdentityRequestSchema,
   SendMessageRequestSchema,
   SYSTEM_CONTENT_TYPE,
   type Conversation,
-  type DeviceKey,
   type Message,
   type ServerToClientEvents,
   type ClientToServerEvents,
   type SystemEvent,
+  type UserKey,
   type UserListItem,
 } from "@euromex/shared";
 import { requireAuth } from "../auth/jwt.js";
 import { getUserPermissions } from "../auth/permissions.js";
 import {
-  addMessageEnvelopes,
   createConversation,
   deleteMessage,
-  deviceIsInConversation,
   editMessage,
   findDmBetween,
   getAlertWatchersInConversation,
-  getConversationDeviceKeys,
+  getConversationUserKeys,
   getConversationForUser,
   getConversationMembers,
   getMessageMeta,
-  getRelatedUserIds,
   insertEncryptedMessage,
   insertSystemMessage,
   isConversationMember,
@@ -38,7 +33,6 @@ import {
   listUsers,
   loadSystemActor,
   markConversationRead,
-  publishDeviceIdentity,
 } from "../chat/repo.js";
 import { linkAttachmentToMessage } from "../chat/attachments-repo.js";
 import {
@@ -48,131 +42,13 @@ import {
 import { isUserOnline, getUserLastSeen } from "../chat/socket.js";
 import { pool } from "../db/pg.js";
 
-const DEVICE_ROOM = (id: string) => `device:${id}`;
+const USER_ROOM = (id: string) => `user:${id}`;
 
 export async function conversationRoutes(app: FastifyInstance) {
-  // --------------------------------------------------------------------------
-  // Publicar clave pública de identidad (X25519) del dispositivo actual.
-  // --------------------------------------------------------------------------
-  app.post(
-    "/auth/devices/publish-identity",
-    { preHandler: [requireAuth] },
-    async (req, reply) => {
-      const parsed = PublishIdentityRequestSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
-      }
-      let keyBuf: Buffer;
-      try {
-        keyBuf = Buffer.from(parsed.data.identityPublicKey, "base64");
-      } catch {
-        return reply.code(400).send({ error: "invalid_key" });
-      }
-      if (keyBuf.length !== 32) {
-        return reply.code(400).send({ error: "invalid_key_length" });
-      }
-      await publishDeviceIdentity(req.session!.did, keyBuf);
-
-      // Fase 23b — Multi-device backfill: notificar a todos los peers que
-      // comparten conversación con este usuario que existe un device nuevo
-      // con identity pública lista. Sus clientes pueden re-cifrar mensajes
-      // históricos para este device (solo los que ellos mismos enviaron, ya
-      // que solo el sender tiene plaintext).
-      const peers = await getRelatedUserIds(req.session!.sub);
-      const event = {
-        userId: req.session!.sub,
-        deviceId: req.session!.did,
-        identityPublicKey: parsed.data.identityPublicKey,
-      };
-      for (const peerUserId of peers) {
-        app.io?.to(`user:${peerUserId}`).emit("device:identity-published", event);
-      }
-
-      return reply.code(204).send();
-    },
-  );
-
-  // --------------------------------------------------------------------------
-  // Fase 23b — Agregar envelopes a un mensaje existente (multi-device backfill).
-  //
-  // Solo el SENDER original del mensaje puede agregar envelopes — es el único
-  // device que tiene el plaintext válido. Idempotente vía ON CONFLICT en BD.
-  // --------------------------------------------------------------------------
-  app.post<{ Params: { id: string } }>(
-    "/messages/:id/envelopes",
-    { preHandler: [requireAuth] },
-    async (req, reply) => {
-      const parsed = AddEnvelopesRequestSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return reply.code(400).send({ error: "invalid_body", issues: parsed.error.issues });
-      }
-      const userId = req.session!.sub;
-      const messageId = req.params.id;
-
-      const meta = await getMessageMeta(messageId);
-      if (!meta) {
-        return reply.code(404).send({ error: "message_not_found" });
-      }
-      if (meta.senderUserId !== userId) {
-        // Solo el sender puede backfill — solo él tiene plaintext.
-        return reply.code(403).send({ error: "not_sender" });
-      }
-
-      // Validar que cada recipientDeviceId pertenezca a un miembro de la
-      // conversación. Hacemos las validaciones en paralelo y descartamos
-      // los inválidos silenciosamente (mejor que rechazar todo el batch
-      // por uno malo).
-      const validatedEnvelopes: Array<{
-        recipientDeviceId: string;
-        ciphertext: Buffer;
-        nonce: Buffer;
-      }> = [];
-      await Promise.all(
-        parsed.data.envelopes.map(async (e) => {
-          const ok = await deviceIsInConversation(
-            e.recipientDeviceId,
-            meta.conversationId,
-          );
-          if (!ok) return;
-          try {
-            validatedEnvelopes.push({
-              recipientDeviceId: e.recipientDeviceId,
-              ciphertext: Buffer.from(e.ciphertext, "base64"),
-              nonce: Buffer.from(e.nonce, "base64"),
-            });
-          } catch {
-            /* base64 invalido — saltar */
-          }
-        }),
-      );
-
-      if (validatedEnvelopes.length === 0) {
-        return reply.code(400).send({ error: "no_valid_envelopes" });
-      }
-
-      const inserted = await addMessageEnvelopes(messageId, validatedEnvelopes);
-
-      // Notificar a cada device que recibió un envelope NUEVO (no a los que
-      // ya tenían — ON CONFLICT DO NOTHING los excluyó).
-      for (const env of validatedEnvelopes) {
-        if (!inserted.includes(env.recipientDeviceId)) continue;
-        app.io?.to(DEVICE_ROOM(env.recipientDeviceId)).emit("message:envelope-added", {
-          messageId,
-          conversationId: meta.conversationId,
-          envelope: {
-            ciphertext: env.ciphertext.toString("base64"),
-            nonce: env.nonce.toString("base64"),
-          },
-          senderUserId: meta.senderUserId,
-          senderDeviceId: meta.senderDeviceId,
-          contentType: meta.contentType,
-          createdAt: meta.createdAt.toISOString(),
-        });
-      }
-
-      return reply.code(204).send();
-    },
-  );
+  // Fase 31: la identidad es por usuario (ver routes/identity.ts). Los
+  // endpoints de publish-identity por device y de backfill (Fase 23b) se
+  // eliminaron: con identidad compartida entre devices, no hay que re-cifrar
+  // por device.
 
   // --------------------------------------------------------------------------
   // Fase 25 — Editar un mensaje (solo el sender, dentro de 24h).
@@ -197,19 +73,19 @@ export async function conversationRoutes(app: FastifyInstance) {
       const meta = await getMessageMeta(messageId);
       if (!meta) return reply.code(404).send({ error: "message_not_found" });
 
-      // Sanity: validar destinatarios (igual que en POST envelopes — evita
-      // que envelopes apunten a devices fuera de la conversación).
+      // Sanity: validar destinatarios — cada envelope debe apuntar a un
+      // usuario miembro de la conversación.
       const incomingEnvelopes: Array<{
-        recipientDeviceId: string;
+        recipientUserId: string;
         ciphertext: Buffer;
         nonce: Buffer;
       }> = [];
       for (const e of parsed.data.envelopes) {
-        const ok = await deviceIsInConversation(e.recipientDeviceId, meta.conversationId);
+        const ok = await isConversationMember(e.recipientUserId, meta.conversationId);
         if (!ok) continue;
         try {
           incomingEnvelopes.push({
-            recipientDeviceId: e.recipientDeviceId,
+            recipientUserId: e.recipientUserId,
             ciphertext: Buffer.from(e.ciphertext, "base64"),
             nonce: Buffer.from(e.nonce, "base64"),
           });
@@ -248,10 +124,10 @@ export async function conversationRoutes(app: FastifyInstance) {
         ],
       );
 
-      // Emit socket event a cada device destinatario, con el envelope que
-      // le corresponde. (Cada device solo recibe el envelope cifrado para él.)
+      // Emit socket event al USER_ROOM de cada usuario destinatario (todos
+      // sus devices reciben el envelope re-cifrado para la identidad de usuario).
       for (const env of res.envelopes) {
-        app.io?.to(DEVICE_ROOM(env.recipientDeviceId)).emit("message:edited", {
+        app.io?.to(USER_ROOM(env.recipientUserId)).emit("message:edited", {
           messageId,
           conversationId: meta.conversationId,
           envelope: {
@@ -439,19 +315,19 @@ export async function conversationRoutes(app: FastifyInstance) {
   );
 
   // --------------------------------------------------------------------------
-  // Fetch claves públicas de todos los dispositivos de la conversación.
-  // El cliente las necesita para cifrar el mensaje por cada dispositivo.
+  // Fase 31: claves públicas de identidad por USUARIO de la conversación.
+  // El cliente cifra un envelope por usuario usando su identityPublicKey.
   // --------------------------------------------------------------------------
   app.get<{ Params: { id: string } }>(
-    "/conversations/:id/device-keys",
+    "/conversations/:id/user-keys",
     { preHandler: [requireAuth] },
-    async (req, reply): Promise<{ devices: DeviceKey[] }> => {
+    async (req, reply): Promise<{ users: UserKey[] }> => {
       const userId = req.session!.sub;
       if (!(await isConversationMember(userId, req.params.id))) {
         return reply.code(403).send({ error: "not_a_member" });
       }
-      const devices = await getConversationDeviceKeys(req.params.id);
-      return { devices };
+      const users = await getConversationUserKeys(req.params.id);
+      return { users };
     },
   );
 
@@ -473,7 +349,7 @@ export async function conversationRoutes(app: FastifyInstance) {
       const limit = Math.min(Number(req.query.limit ?? "50"), 200);
       const messages = await listMessages({
         conversationId: req.params.id,
-        requesterDeviceId: req.session!.did,
+        requesterUserId: req.session!.sub,
         requesterWatchesAlerts: req.session!.watchesAlerts,
         limit,
         before: req.query.before,
@@ -501,7 +377,7 @@ export async function conversationRoutes(app: FastifyInstance) {
       }
 
       const envelopes = parsed.data.envelopes.map((e) => ({
-        recipientDeviceId: e.recipientDeviceId,
+        recipientUserId: e.recipientUserId,
         ciphertext: Buffer.from(e.ciphertext, "base64"),
         nonce: Buffer.from(e.nonce, "base64"),
       }));
@@ -545,8 +421,7 @@ export async function conversationRoutes(app: FastifyInstance) {
       };
       if (io) {
         for (const env of res.envelopes) {
-          if (env.recipientDeviceId === deviceId) continue;
-          io.to(DEVICE_ROOM(env.recipientDeviceId)).emit("message:new", {
+          io.to(USER_ROOM(env.recipientUserId)).emit("message:new", {
             ...base,
             envelope: {
               ciphertext: env.ciphertext.toString("base64"),
@@ -556,7 +431,7 @@ export async function conversationRoutes(app: FastifyInstance) {
         }
       }
 
-      const ownEnv = res.envelopes.find((e) => e.recipientDeviceId === deviceId);
+      const ownEnv = res.envelopes.find((e) => e.recipientUserId === userId);
       return {
         ...base,
         envelope: ownEnv
